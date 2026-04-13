@@ -15,6 +15,7 @@
      2. Crea proyecto → Agregar app web
      3. Copia el objeto firebaseConfig y reemplaza el de abajo
      ============================================================ -->
+<script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
 <script type="module">
   import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-app.js";
   import { getDatabase, ref, set, push, onValue, update, remove } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-database.js";
@@ -789,6 +790,122 @@
 
   refreshDateInputs();
   renderStorage();
+
+  function histSortValue(h = {}) {
+    const iso = h.fechaISO || toInputDate(h.fecha || '');
+    const time = h.hora || '00:00';
+    return new Date(`${iso || '1970-01-01'}T${time.length===5?time+':00':time}`).getTime() || 0;
+  }
+
+  function normalizeHistItemForExport(id, h = {}) {
+    return {
+      id,
+      fecha: h.fecha || '',
+      hora: h.hora || '',
+      fechaISO: h.fechaISO || toInputDate(h.fecha || ''),
+      movimiento: h.mov || '',
+      tipo: h.tipo || '',
+      insumo: h.insumo || '',
+      cantidad: h.cantidad || '',
+      editable: h.editable ? 'Sí' : 'No',
+      producto: h.raw?.producto ? productLabel(h.raw.producto) : (h.raw?.categoriaProducto ? productLabel(h.raw.categoriaProducto) : ''),
+      detalle: h.raw?.nota || h.raw?.proveedor || h.raw?.cliente || ''
+    };
+  }
+
+  window.exportarTodoExcel = function() {
+    try {
+      if (typeof XLSX === 'undefined') { toast('No se pudo cargar el exportador de Excel.'); return; }
+      const wb = XLSX.utils.book_new();
+
+      const inventarioRows = [{
+        fecha_exportacion: new Date().toLocaleString('es-MX'),
+        tabicon: Number(inv.tabicon) || 0,
+        tabique_chiquito: Number(inv.tabiqueChiquito) || 0,
+        cemento_bultos: Number(inv.cemento) || 0,
+        balastre_m3: Number(inv.balastre) || 0,
+        confetillo_m3: Number(inv.confetillo) || 0
+      }];
+
+      const historialRows = Object.entries(historial)
+        .map(([id, h]) => normalizeHistItemForExport(id, h))
+        .sort((a, b) => {
+          const av = new Date(`${a.fechaISO || '1970-01-01'}T${(a.hora || '00:00').length===5?(a.hora||'00:00')+':00':(a.hora||'00:00')}`).getTime() || 0;
+          const bv = new Date(`${b.fechaISO || '1970-01-01'}T${(b.hora || '00:00').length===5?(b.hora||'00:00')+':00':(b.hora||'00:00')}`).getTime() || 0;
+          return bv - av;
+        });
+
+      const notasRows = Object.entries(notas)
+        .map(([id, raw]) => normalizeNota(id, raw))
+        .sort((a,b) => noteTimeValue(b) - noteTimeValue(a))
+        .map(n => ({
+          id: n.id,
+          cliente: n.cliente || '',
+          producto: productLabel(n.producto),
+          cantidad_piezas: Number(n.cant) || 0,
+          precio_unitario: Number(n.precio) || 0,
+          total: Number(n.total) || 0,
+          abonado: (n.abonos || []).reduce((s, a) => s + (Number(a.monto) || 0), 0),
+          saldo_pendiente: saldo(n),
+          estado: n.estado || '',
+          fecha: n.fecha || '',
+          fecha_limite: n.fechaLimite || '',
+          abonos: (n.abonos || []).map(a => `${a.fecha || ''}: $${fmt(Number(a.monto) || 0, 2)}`).join(' | ')
+        }));
+
+      const abonosRows = Object.entries(notas)
+        .flatMap(([id, raw]) => {
+          const n = normalizeNota(id, raw);
+          return (n.abonos || []).map((a, idx) => ({
+            nota_id: id,
+            indice_abono: idx + 1,
+            cliente: n.cliente || '',
+            producto: productLabel(n.producto),
+            fecha_abono: a.fecha || '',
+            monto: Number(a.monto) || 0
+          }));
+        });
+
+      XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(inventarioRows), 'Inventario');
+      XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(historialRows), 'Historial');
+      XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(notasRows), 'Notas');
+      XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(abonosRows.length ? abonosRows : [{ nota_id:'', indice_abono:'', cliente:'', producto:'', fecha_abono:'', monto:'' }]), 'Abonos');
+
+      const filename = `inventario_tabirock_${new Date().toISOString().slice(0,10)}.xlsx`;
+      XLSX.writeFile(wb, filename);
+      toast('✓ Excel exportado.');
+    } catch (e) {
+      console.error(e);
+      toast('Error al exportar Excel.');
+    }
+  };
+
+  window.borrarTodoFirebase = function() {
+    const password = prompt('Escribe la contraseña para borrar todo:');
+    if (password === null) return;
+    if (password !== 'Tabirock') {
+      toast('Contraseña incorrecta.');
+      return;
+    }
+    const second = confirm('Esto borrará TODO en Firebase: inventario, historial y notas. ¿Continuar?');
+    if (!second) return;
+    remove(ref(db))
+      .then(() => {
+        inv = cloneInvState({});
+        historial = {};
+        notas = {};
+        renderDashboard();
+        renderHistorial();
+        renderNotas();
+        renderStorage();
+        toast('✓ Firebase borrado por completo.');
+      })
+      .catch(err => {
+        console.error(err);
+        toast('No se pudo borrar Firebase.');
+      });
+  };
+
   window._appReady = true;
   setTimeout(() => { if (window.setEntradaCategoria) setEntradaCategoria('cemento'); }, 30);
 </script>
@@ -890,8 +1007,11 @@
 
   .btn { padding: 10px 20px; border-radius: var(--radius-sm); font-family: 'Sora', sans-serif; font-size: 13px; font-weight: 600; cursor: pointer; border: none; transition: all 0.15s; }
   .btn-primary { background: var(--accent-dark); color: white; }
-  .btn-primary:active { transform: scale(0.97); }
+  .btn-danger { background: var(--red); color: white; }
+  .btn-primary:active, .btn-danger:active { transform: scale(0.97); }
   .btn-row { margin-top: 14px; display: flex; gap: 8px; }
+  .panel-actions { display:flex; gap:10px; flex-wrap:wrap; margin-top:14px; }
+  .panel-actions .btn { flex:1 1 220px; }
 
   /* Historial */
   .hist-table { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); overflow: hidden; box-shadow: var(--shadow); }
@@ -1000,6 +1120,10 @@
       <div class="card"><div class="card-label">Notas por cobrar</div><div class="card-value" id="val-notas-pendientes">—</div><div class="card-unit" id="val-monto-pendiente">clientes</div></div>
       <div class="card"><div class="card-label">Uso nube estimado</div><div class="card-value" id="storage-used">—</div><div class="card-unit">datos guardados</div></div>
       <div class="card"><div class="card-label">Disponible aprox.</div><div class="card-value" id="storage-remaining">—</div><div class="card-unit">referencia Spark 1 GB</div></div>
+    </div>
+    <div class="panel-actions">
+      <button class="btn btn-primary" onclick="exportarTodoExcel()">Exportar todo a Excel</button>
+      <button class="btn btn-danger" onclick="borrarTodoFirebase()">Borrar todo Firebase</button>
     </div>
   </div>
 
