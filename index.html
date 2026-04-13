@@ -184,17 +184,19 @@
     if (inv.confetillo < 5) alertas += alerta('Confetillo bajo: ' + fmt(inv.confetillo, 2) + ' m³ disponibles.');
 
     // Notas vencidas
-    Object.entries(notas).forEach(([, n]) => {
+    Object.entries(notas).forEach(([id, raw]) => {
+      const n = normalizeNota(id, raw);
       if (n.estado !== 'pagada' && n.fechaLimite) {
-        const fl = new Date(n.fechaLimite + 'T00:00:00');
-        if (fl < hoy) alertas += alerta('Nota vencida: ' + n.cliente + ' — $' + fmt(saldo(n), 2));
+        const iso = toInputDate(n.fechaLimite);
+        const fl = new Date((iso || '1970-01-01') + 'T00:00:00');
+        if (fl < hoy) alertas += alerta('Nota vencida: ' + (n.cliente || 'Cliente') + ' — $' + fmt(saldo(n), 2));
       }
     });
     document.getElementById('alertas').innerHTML = alertas;
 
     // Resumen notas
     let porCobrar = 0, totalNotas = 0;
-    Object.values(notas).forEach(n => {
+    Object.values(notas).map((n, idx) => normalizeNota(String(idx), n)).forEach(n => {
       if (n.estado !== 'pagada') { porCobrar++; totalNotas += saldo(n); }
     });
     setVal('val-notas-pendientes', porCobrar);
@@ -353,8 +355,31 @@
   };
 
   function saldo(n) {
-    const abonado = (n.abonos || []).reduce((s, a) => s + a.monto, 0);
-    return Math.max(0, n.total - abonado);
+    const abonado = (n.abonos || []).reduce((s, a) => s + (Number(a.monto) || 0), 0);
+    const total = Number(n?.total) || ((Number(n?.cant) || 0) * (Number(n?.precio) || 0));
+    return Math.max(0, total - abonado);
+  }
+
+  function normalizeNota(id, n = {}) {
+    const total = Number(n.total) || ((Number(n.cant) || 0) * (Number(n.precio) || 0));
+    const estadoReal = (n.estado === 'pagada' || saldo({ ...n, total }) <= 0) ? 'pagada' : 'pendiente';
+    return {
+      id,
+      ...n,
+      producto: normalizeProductoKey(n.producto),
+      cant: Number(n.cant) || 0,
+      precio: Number(n.precio) || 0,
+      total,
+      abonos: Array.isArray(n.abonos) ? n.abonos : [],
+      fecha: n.fecha || '',
+      fechaLimite: n.fechaLimite || '',
+      estado: estadoReal
+    };
+  }
+
+  function noteTimeValue(n = {}) {
+    const iso = toInputDate(n.fechaLimite || n.fecha || '');
+    return new Date((iso || '1970-01-01') + 'T00:00:00').getTime();
   }
 
   function normalizeProductoKey(v) {
@@ -535,29 +560,34 @@
   function renderNotas() {
     const hoy = new Date(); hoy.setHours(0,0,0,0);
     const pendientes = [], pagadas = [];
-    Object.entries(notas).forEach(([id, n]) => {
+    const notasLista = Object.entries(notas)
+      .map(([id, n]) => normalizeNota(id, n))
+      .sort((a, b) => noteTimeValue(b) - noteTimeValue(a));
+
+    notasLista.forEach(n => {
       const sal = saldo(n);
-      const vencida = n.fechaLimite && new Date(n.fechaLimite + 'T00:00:00') < hoy && n.estado !== 'pagada';
+      const fechaLimiteISO = toInputDate(n.fechaLimite || '');
+      const vencida = fechaLimiteISO && new Date(fechaLimiteISO + 'T00:00:00') < hoy && n.estado !== 'pagada';
       const row = `
         <div class="nota-card ${vencida ? 'vencida' : ''} ${n.estado === 'pagada' ? 'pagada' : ''}">
           <div class="nota-top">
-            <span class="nota-cliente">${n.cliente}</span>
+            <span class="nota-cliente">${n.cliente || 'Cliente sin nombre'}</span>
             <span class="nota-badge ${n.estado === 'pagada' ? 'badge-pagada' : vencida ? 'badge-vencida' : 'badge-pendiente'}">${n.estado === 'pagada' ? 'Pagada' : vencida ? 'Vencida' : 'Pendiente'}</span>
           </div>
           <div class="nota-info">
-            <span>${fmt(n.cant)} ${productLabel(n.producto || 'tabicon').toLowerCase()} · $${fmt(n.precio, 2)}/pza</span>
+            <span>${fmt(n.cant)} ${productLabel(n.producto).toLowerCase()} · $${fmt(n.precio, 2)}/pza</span>
             <span>Total: <b>$${fmt(n.total, 2)}</b></span>
           </div>
           <div class="nota-info">
-            <span>Fecha: ${n.fecha}</span>
+            <span>Fecha: ${n.fecha || '—'}</span>
             <span>Límite: ${n.fechaLimite || '—'}</span>
           </div>
-          ${(n.abonos || []).length > 0 ? '<div class="abonos-lista">' + (n.abonos || []).map(a => `<span>Abono ${a.fecha}: $${fmt(a.monto, 2)}</span>`).join('') + '</div>' : ''}
+          ${n.abonos.length > 0 ? '<div class="abonos-lista">' + n.abonos.map(a => `<span>Abono ${a.fecha || '—'}: $${fmt(Number(a.monto) || 0, 2)}</span>`).join('') + '</div>' : ''}
           <div class="nota-saldo">Saldo pendiente: <b>$${fmt(sal, 2)}</b></div>
           <div class="nota-acciones">
-            ${n.estado !== 'pagada' ? `<button class="btn-accion btn-abonar" onclick="abonar('${id}')">Abonar</button>` : ''}
-            ${n.estado !== 'pagada' ? `<button class="btn-accion btn-pagar" onclick="marcarPagada('${id}')">Marcar pagada</button>` : ''}
-            <button class="btn-accion btn-eliminar" onclick="eliminarNota('${id}')">Eliminar</button>
+            ${n.estado !== 'pagada' ? `<button class="btn-accion btn-abonar" onclick="abonar('${n.id}')">Abonar</button>` : ''}
+            ${n.estado !== 'pagada' ? `<button class="btn-accion btn-pagar" onclick="marcarPagada('${n.id}')">Marcar pagada</button>` : ''}
+            <button class="btn-accion btn-eliminar" onclick="eliminarNota('${n.id}')">Eliminar</button>
           </div>
         </div>`;
       n.estado === 'pagada' ? pagadas.push(row) : pendientes.push(row);
@@ -570,25 +600,54 @@
   }
 
   // ── HISTORIAL ────────────────────────────────────────────────
+  function histDateValue(h = {}) {
+    const iso = h.fechaISO || toInputDate(h.fecha || '') || '1970-01-01';
+    return new Date(iso + 'T' + (h.hora || '00:00')).getTime();
+  }
+
+  function histLabel(mov = '') {
+    const map = { all: 'Todos', Entrada: 'Entradas', Producción: 'Producción', Venta: 'Ventas', Nota: 'Notas', Abono: 'Abonos' };
+    return map[mov] || mov;
+  }
+
+  window.histFilter = 'all';
+  window.showHistFilter = function(filter = 'all', btn) {
+    window.histFilter = filter;
+    document.querySelectorAll('.hist-filter-btn').forEach(b => b.classList.remove('active'));
+    if (btn) btn.classList.add('active');
+    else {
+      const autoBtn = document.querySelector(`.hist-filter-btn[data-filter="${filter}"]`);
+      if (autoBtn) autoBtn.classList.add('active');
+    }
+    renderHistorial();
+  };
+
   function renderHistorial() {
     const lista = document.getElementById('historial-lista');
     if (!lista) return;
-    const items = getHistEntries().sort((a, b) => {
-      const da = new Date((b.fechaISO || '1970-01-01') + 'T' + (b.hora || '00:00'));
-      const db = new Date((a.fechaISO || '1970-01-01') + 'T' + (a.hora || '00:00'));
-      return da - db;
-    });
-    if (!items.length) { lista.innerHTML = '<div class="empty">Sin movimientos aún.</div>'; return; }
+    const allItems = getHistEntries().sort((a, b) => histDateValue(b) - histDateValue(a));
+    if (!allItems.length) { lista.innerHTML = '<div class="empty">Sin movimientos aún.</div>'; return; }
     const colors = { Entrada: 'badge-in', Producción: 'badge-prod', Venta: 'badge-out', Nota: 'badge-nota', Abono: 'badge-abono' };
-    lista.innerHTML = items.map(h =>
-      `<div class="hist-row hist-row-acciones">
-        <span class="hist-fecha">${h.fecha} ${h.hora || ''}</span>
-        <span>${h.insumo}</span>
-        <span>${h.cantidad}</span>
-        <span><span class="badge ${colors[h.mov] || 'badge-in'}">${h.mov}</span></span>
-        <span class="hist-actions">${h.editable ? `<button class="hist-btn" onclick="editarMovimiento('${h.id}')">Editar</button><button class="hist-btn hist-btn-danger" onclick="eliminarMovimiento('${h.id}')">Borrar</button>` : '<span class="hist-lock">Fijo</span>'}</span>
-      </div>`
-    ).join('');
+    const groups = ['Entrada', 'Producción', 'Venta', 'Nota', 'Abono'];
+    const filter = window.histFilter || 'all';
+    const useGroups = filter === 'all' ? groups : [filter];
+
+    lista.innerHTML = useGroups.map(group => {
+      const items = allItems.filter(h => h.mov === group);
+      if (!items.length) return '';
+      return `
+        <div class="hist-group">
+          <div class="hist-group-title">${histLabel(group)} <span>${items.length}</span></div>
+          ${items.map(h => `
+            <div class="hist-row hist-row-acciones">
+              <span class="hist-fecha">${h.fecha || '—'} ${h.hora || ''}</span>
+              <span>${h.insumo || '—'}</span>
+              <span>${h.cantidad || '—'}</span>
+              <span><span class="badge ${colors[h.mov] || 'badge-in'}">${h.mov}</span></span>
+              <span class="hist-actions">${h.editable ? `<button class="hist-btn" onclick="editarMovimiento('${h.id}')">Editar</button><button class="hist-btn hist-btn-danger" onclick="eliminarMovimiento('${h.id}')">Borrar</button>` : '<span class="hist-lock">Fijo</span>'}</span>
+            </div>`).join('')}
+        </div>`;
+    }).join('') || '<div class="empty">Sin movimientos en esta categoría.</div>';
   }
 
   // ── UTILS ────────────────────────────────────────────────────
@@ -717,6 +776,12 @@
   .hist-btn { padding: 6px 10px; border-radius: 8px; border: 1px solid var(--border); background: white; font-family: 'Sora', sans-serif; font-size: 11px; font-weight: 600; cursor: pointer; }
   .hist-btn-danger { background: var(--red-light); color: var(--red); border-color: #f5c6c2; }
   .hist-lock { font-size: 11px; color: var(--text3); }
+  .hist-filters { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 12px; }
+  .hist-filter-btn { padding: 7px 12px; border-radius: 20px; border: 1px solid var(--border); background: var(--surface); color: var(--text2); font-family: 'Sora', sans-serif; font-size: 12px; font-weight: 600; cursor: pointer; }
+  .hist-filter-btn.active { background: var(--accent-dark); color: white; border-color: transparent; }
+  .hist-group + .hist-group { border-top: 1px solid var(--border); }
+  .hist-group-title { padding: 11px 14px; background: var(--surface2); font-size: 12px; font-weight: 700; color: var(--accent-dark); display: flex; justify-content: space-between; align-items: center; }
+  .hist-group-title span { color: var(--text3); font-weight: 600; }
 
   /* Badges */
   .badge { display: inline-block; padding: 3px 9px; border-radius: 20px; font-size: 11px; font-weight: 600; }
@@ -944,6 +1009,14 @@
 
   <!-- HISTORIAL -->
   <div class="section" id="tab-historial">
+    <div class="hist-filters">
+      <button class="hist-filter-btn active" data-filter="all" onclick="showHistFilter('all', this)">Todos</button>
+      <button class="hist-filter-btn" data-filter="Entrada" onclick="showHistFilter('Entrada', this)">Entradas</button>
+      <button class="hist-filter-btn" data-filter="Producción" onclick="showHistFilter('Producción', this)">Producción</button>
+      <button class="hist-filter-btn" data-filter="Venta" onclick="showHistFilter('Venta', this)">Ventas</button>
+      <button class="hist-filter-btn" data-filter="Nota" onclick="showHistFilter('Nota', this)">Notas</button>
+      <button class="hist-filter-btn" data-filter="Abono" onclick="showHistFilter('Abono', this)">Abonos</button>
+    </div>
     <div class="hist-table">
       <div class="hist-header"><span>Fecha</span><span>Insumo</span><span>Cantidad</span><span>Tipo</span><span>Acciones</span></div>
       <div id="historial-lista"><div class="empty">Sin movimientos.</div></div>
