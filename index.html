@@ -37,21 +37,25 @@
   let inv = { tabicon: 0, tabiqueChiquito: 0, cemento: 0, balastre: 0, confetillo: 0 };
   let historial = {};
   let notas = {};
+  let entradaCategoria = 'cemento';
+  let notasSearch = '';
 
   // ── Inventario ──────────────────────────────────────────────
   onValue(ref(db, 'inventario'), snap => {
-    if (snap.val()) { inv = cloneInvState(snap.val()); renderDashboard(); }
+    if (snap.val()) { inv = cloneInvState(snap.val()); renderDashboard(); renderStorage(); }
   });
 
   onValue(ref(db, 'historial'), snap => {
     historial = snap.val() || {};
     renderHistorial();
+    renderStorage();
   });
 
   onValue(ref(db, 'notas'), snap => {
     notas = snap.val() || {};
     renderNotas();
     renderDashboard();
+    renderStorage();
   });
 
   function saveInv() { set(ref(db, 'inventario'), inv); }
@@ -165,6 +169,29 @@
     if (prodFecha && !prodFecha.value) prodFecha.value = today;
   }
 
+
+  function estimateBytes(obj) {
+    try { return new Blob([JSON.stringify(obj || {})]).size; }
+    catch (e) { return JSON.stringify(obj || {}).length; }
+  }
+
+  function formatBytes(bytes = 0) {
+    const units = ['B', 'KB', 'MB', 'GB'];
+    let size = Number(bytes) || 0;
+    let idx = 0;
+    while (size >= 1024 && idx < units.length - 1) { size /= 1024; idx++; }
+    const dec = idx === 0 ? 0 : 2;
+    return size.toLocaleString('es-MX', { minimumFractionDigits: 0, maximumFractionDigits: dec }) + ' ' + units[idx];
+  }
+
+  function renderStorage() {
+    const used = estimateBytes({ inventario: inv, historial, notas });
+    const sparkLimit = 1024 * 1024 * 1024;
+    const remaining = Math.max(0, sparkLimit - used);
+    setVal('storage-used', formatBytes(used));
+    setVal('storage-remaining', formatBytes(remaining));
+  }
+
   // ── DASHBOARD ───────────────────────────────────────────────
   function renderDashboard() {
         setVal('val-tabicon', fmt(inv.tabicon));
@@ -208,38 +235,88 @@
   }
 
   // ── ENTRADA ─────────────────────────────────────────────────
+  window.setEntradaCategoria = function(tipo = 'cemento', btn) {
+    entradaCategoria = tipo;
+    sv('in-tipo', tipo);
+    document.querySelectorAll('.entrada-cat-btn').forEach(b => b.classList.remove('active'));
+    if (btn) btn.classList.add('active');
+    else {
+      const autoBtn = document.querySelector(`.entrada-cat-btn[data-tipo="${tipo}"]`);
+      if (autoBtn) autoBtn.classList.add('active');
+    }
+    updateEntradaPreview();
+  };
+
   window.updateEntradaPreview = function() {
-    const tipo = gv('in-tipo'), cant = parseFloat(gv('in-cant')) || 0;
+    const tipo = gv('in-tipo') || entradaCategoria || 'cemento';
+    const cant = parseFloat(gv('in-cant')) || 0;
+    const precioTon = parseFloat(gv('in-precio-ton')) || 0;
     const lbl = document.getElementById('in-cant-label');
+    const precioWrap = document.getElementById('in-precio-ton-wrap');
     let prev = '';
     if (tipo === 'cemento') {
       lbl.textContent = 'Cantidad (bultos)';
-      prev = '<b>' + fmt(cant) + '</b> bultos → est. <b>' + fmt(cant * 125) + '</b> tabicones | balastre: <b>' + fmt(cant * 0.36, 3) + ' m³</b> · confetillo: <b>' + fmt(cant * 0.27, 3) + ' m³</b>';
+      if (precioWrap) precioWrap.style.display = 'flex';
+      const toneladas = cant * 0.05;
+      const total = toneladas * precioTon;
+      const costoBulto = precioTon > 0 ? precioTon / 20 : 0;
+      prev = '<b>' + fmt(cant) + '</b> bultos = <b>' + fmt(toneladas, 2) + ' t</b> · costo por bulto: <b>$' + fmt(costoBulto, 2) + '</b> · total: <b>$' + fmt(total, 2) + '</b><br>Est. producción: <b>' + fmt(cant * 125) + '</b> piezas | balastre: <b>' + fmt(cant * 0.36, 3) + ' m³</b> · confetillo: <b>' + fmt(cant * 0.27, 3) + ' m³</b>';
     } else if (tipo === 'balastre') {
       lbl.textContent = 'Viajes (1 viaje = 13 m³)';
+      if (precioWrap) precioWrap.style.display = 'none';
       prev = '<b>' + fmt(cant) + '</b> viaje(s) = <b>' + fmt(cant * 13, 2) + ' m³</b> → alcanza para <b>' + fmt(Math.floor(cant * 13 / 0.36)) + '</b> bultos';
     } else {
       lbl.textContent = 'Viajes (1 viaje = 13 m³)';
+      if (precioWrap) precioWrap.style.display = 'none';
       prev = '<b>' + fmt(cant) + '</b> viaje(s) = <b>' + fmt(cant * 13, 2) + ' m³</b> → alcanza para <b>' + fmt(Math.floor(cant * 13 / 0.27)) + '</b> bultos';
     }
     document.getElementById('entrada-preview').innerHTML = prev;
   };
 
   window.registrarEntrada = function() {
-    const tipo = gv('in-tipo'), cant = parseFloat(gv('in-cant')) || 0;
+    const tipo = gv('in-tipo') || entradaCategoria || 'cemento';
+    const cant = parseFloat(gv('in-cant')) || 0;
+    const categoriaTexto = productLabel(normalizeProductoKey(gv('in-categoria-producto') || 'tabicon'));
+    const precioTon = parseFloat(gv('in-precio-ton')) || 0;
     if (cant <= 0) { toast('Ingresa una cantidad válida.'); return; }
     let insumo = '', cantidad = '';
     let effect = {};
-    if (tipo === 'cemento') { effect = { cemento: cant }; inv.cemento += cant; insumo = 'Cemento'; cantidad = fmt(cant) + ' bultos'; }
-    else if (tipo === 'balastre') { effect = { balastre: cant * 13 }; inv.balastre += cant * 13; insumo = 'Balastre'; cantidad = fmt(cant) + ' viaje(s) (' + fmt(cant * 13, 2) + ' m³)'; }
-    else { effect = { confetillo: cant * 13 }; inv.confetillo += cant * 13; insumo = 'Confetillo'; cantidad = fmt(cant) + ' viaje(s) (' + fmt(cant * 13, 2) + ' m³)'; }
-    addHist('Entrada', insumo, cantidad, 'Entrada', gv('in-proveedor') || gv('in-nota'), {
+    const proveedor = gv('in-proveedor') || '';
+    const nota = gv('in-nota') || '';
+    let extra = [categoriaTexto];
+    if (tipo === 'cemento') {
+      effect = { cemento: cant };
+      inv.cemento += cant;
+      insumo = 'Cemento';
+      const toneladas = cant * 0.05;
+      const total = toneladas * precioTon;
+      const costoBulto = precioTon > 0 ? precioTon / 20 : 0;
+      cantidad = fmt(cant) + ' bultos';
+      if (precioTon > 0) {
+        cantidad += ' | $' + fmt(total, 2);
+        extra.push('$' + fmt(precioTon, 2) + '/ton');
+        extra.push('$' + fmt(costoBulto, 2) + '/bulto');
+      }
+    } else if (tipo === 'balastre') {
+      effect = { balastre: cant * 13 };
+      inv.balastre += cant * 13;
+      insumo = 'Balastre';
+      cantidad = fmt(cant) + ' viaje(s) (' + fmt(cant * 13, 2) + ' m³)';
+    } else {
+      effect = { confetillo: cant * 13 };
+      inv.confetillo += cant * 13;
+      insumo = 'Confetillo';
+      cantidad = fmt(cant) + ' viaje(s) (' + fmt(cant * 13, 2) + ' m³)';
+    }
+    if (proveedor) extra.push(proveedor);
+    if (nota) extra.push(nota);
+    addHist('Entrada', insumo, cantidad, 'Entrada', extra.join(' · '), {
       editable: true,
       effect,
-      raw: { tipo, cant, proveedor: gv('in-proveedor') || '', nota: gv('in-nota') || '' }
+      raw: { tipo, cant, proveedor, nota, categoriaProducto: normalizeProductoKey(gv('in-categoria-producto') || 'tabicon'), precioTon }
     });
     saveInv();
-    sv('in-cant', 1); sv('in-proveedor', ''); sv('in-nota', '');
+    sv('in-cant', 1); sv('in-proveedor', ''); sv('in-nota', ''); sv('in-precio-ton', '');
     updateEntradaPreview();
     toast('✓ Entrada registrada.');
   };
@@ -345,6 +422,19 @@
     toast('✓ Abono de $' + fmt(monto, 2) + ' registrado.');
   };
 
+
+  window.eliminarAbono = function(id, index) {
+    const nota = normalizeNota(id, notas[id] || {});
+    if (!nota.abonos[index]) return;
+    if (!confirm('¿Borrar este abono?')) return;
+    const abonos = [...nota.abonos];
+    abonos.splice(index, 1);
+    const nuevoSaldo = Math.max(0, nota.total - abonos.reduce((s, a) => s + (Number(a.monto) || 0), 0));
+    const estado = nuevoSaldo <= 0 ? 'pagada' : 'pendiente';
+    update(ref(db, 'notas/' + id), { abonos, estado });
+    toast('✓ Abono eliminado.');
+  };
+
   window.marcarPagada = function(id) {
     update(ref(db, 'notas/' + id), { estado: 'pagada' });
     toast('✓ Nota marcada como pagada.');
@@ -399,19 +489,33 @@
       else if (raw.tipo === 'balastre') { insumo = 'Balastre'; cantidad = fmt(cant) + ' viaje(s) (' + fmt(cant * 13, 2) + ' m³)'; effect = { balastre: cant * 13 }; }
       else if (raw.tipo === 'confetillo') { insumo = 'Confetillo'; cantidad = fmt(cant) + ' viaje(s) (' + fmt(cant * 13, 2) + ' m³)'; effect = { confetillo: cant * 13 }; }
       else return null;
-      const producto = normalizeProductoKey(raw.producto || 'tabicon');
+      const categoriaProducto = normalizeProductoKey(raw.categoriaProducto || raw.producto || 'tabicon');
+      const precioTon = Number(raw.precioTon) || 0;
+      const proveedorTxt = raw.proveedor || '';
+      const notaTxt = raw.nota || '';
+      let extraParts = [productLabel(categoriaProducto)];
+      if (raw.tipo === 'cemento' && precioTon > 0) {
+        const toneladas = cant * 0.05;
+        const total = toneladas * precioTon;
+        const costoBulto = precioTon / 20;
+        cantidad += ' | $' + fmt(total, 2);
+        extraParts.push('$' + fmt(precioTon, 2) + '/ton');
+        extraParts.push('$' + fmt(costoBulto, 2) + '/bulto');
+      }
+      if (proveedorTxt) extraParts.push(proveedorTxt);
+      if (notaTxt) extraParts.push(notaTxt);
       return {
         ...original,
         fecha: fromInputDate(raw.fecha || original.fechaISO || toInputDate(original.fecha)),
         fechaISO: raw.fecha || original.fechaISO || toInputDate(original.fecha),
         hora: original.hora || currentHora(),
-        tipo: raw.proveedor || raw.nota ? 'Entrada — ' + (raw.proveedor || raw.nota) : 'Entrada',
+        tipo: 'Entrada — ' + extraParts.join(' · '),
         insumo,
         cantidad,
         mov: 'Entrada',
         editable: true,
         effect,
-        raw: { tipo: raw.tipo, cant, proveedor: raw.proveedor || '', nota: raw.nota || '' }
+        raw: { tipo: raw.tipo, cant, proveedor: proveedorTxt, nota: notaTxt, categoriaProducto, precioTon }
       };
     }
     if (original.mov === 'Producción') {
@@ -471,6 +575,14 @@
       const cant = prompt(raw.tipo === 'cemento' ? 'Cantidad de bultos:' : 'Cantidad de viajes:', raw.cant ?? '');
       if (cant === null) return;
       raw.cant = Number(cant);
+      const categoriaProducto = prompt('Categoría asociada: tabicon o tabiqueChiquito', raw.categoriaProducto || 'tabicon');
+      if (categoriaProducto === null) return;
+      raw.categoriaProducto = String(categoriaProducto).trim();
+      if (raw.tipo === 'cemento') {
+        const precioTon = prompt('Precio por tonelada (opcional):', raw.precioTon ?? '');
+        if (precioTon === null) return;
+        raw.precioTon = Number(precioTon) || 0;
+      }
       const proveedor = prompt('Proveedor (opcional):', raw.proveedor || '');
       if (proveedor === null) return;
       raw.proveedor = proveedor;
@@ -557,11 +669,22 @@
     toast('✓ Movimiento eliminado.');
   };
 
+  window.setNotasSearch = function(value = '') {
+    notasSearch = String(value || '').toLowerCase().trim();
+    renderNotas();
+  };
+
   function renderNotas() {
     const hoy = new Date(); hoy.setHours(0,0,0,0);
     const pendientes = [], pagadas = [];
+    const query = (notasSearch || '').toLowerCase().trim();
     const notasLista = Object.entries(notas)
       .map(([id, n]) => normalizeNota(id, n))
+      .filter(n => {
+        if (!query) return true;
+        const haystack = [n.cliente, productLabel(n.producto), n.fecha, n.fechaLimite, n.estado, n.total, n.cant].join(' ').toLowerCase();
+        return haystack.includes(query);
+      })
       .sort((a, b) => noteTimeValue(b) - noteTimeValue(a));
 
     notasLista.forEach(n => {
@@ -582,7 +705,7 @@
             <span>Fecha: ${n.fecha || '—'}</span>
             <span>Límite: ${n.fechaLimite || '—'}</span>
           </div>
-          ${n.abonos.length > 0 ? '<div class="abonos-lista">' + n.abonos.map(a => `<span>Abono ${a.fecha || '—'}: $${fmt(Number(a.monto) || 0, 2)}</span>`).join('') + '</div>' : ''}
+          ${n.abonos.length > 0 ? '<div class="abonos-lista">' + n.abonos.map((a, idx) => `<span>Abono ${a.fecha || '—'}: $${fmt(Number(a.monto) || 0, 2)} <button class="abono-del-btn" onclick="eliminarAbono('${n.id}', ${idx})">×</button></span>`).join('') + '</div>' : ''}
           <div class="nota-saldo">Saldo pendiente: <b>$${fmt(sal, 2)}</b></div>
           <div class="nota-acciones">
             ${n.estado !== 'pagada' ? `<button class="btn-accion btn-abonar" onclick="abonar('${n.id}')">Abonar</button>` : ''}
@@ -593,10 +716,12 @@
       n.estado === 'pagada' ? pagadas.push(row) : pendientes.push(row);
     });
 
+    const emptyMsg = query ? '<div class="empty">No se encontraron notas con ese texto.</div>' : '<div class="empty">Sin notas pendientes.</div>';
+    const emptyPaid = query ? '<div class="empty">No se encontraron notas cobradas con ese texto.</div>' : '<div class="empty">Sin notas pagadas.</div>';
     const elP = document.getElementById('notas-pendientes');
     const elPg = document.getElementById('notas-pagadas');
-    if (elP) elP.innerHTML = pendientes.length ? pendientes.join('') : '<div class="empty">Sin notas pendientes.</div>';
-    if (elPg) elPg.innerHTML = pagadas.length ? pagadas.join('') : '<div class="empty">Sin notas pagadas.</div>';
+    if (elP) elP.innerHTML = pendientes.length ? pendientes.join('') : emptyMsg;
+    if (elPg) elPg.innerHTML = pagadas.length ? pagadas.join('') : emptyPaid;
   }
 
   // ── HISTORIAL ────────────────────────────────────────────────
@@ -663,7 +788,9 @@
   }
 
   refreshDateInputs();
+  renderStorage();
   window._appReady = true;
+  setTimeout(() => { if (window.setEntradaCategoria) setEntradaCategoria('cemento'); }, 30);
 </script>
 
 <style>
@@ -814,6 +941,18 @@
   .subtab { padding: 7px 16px; border-radius: 20px; font-size: 13px; font-weight: 600; font-family: 'Sora', sans-serif; cursor: pointer; border: 1px solid var(--border); background: var(--surface); color: var(--text2); transition: all 0.15s; }
   .subtab.active { background: var(--accent-dark); color: white; border-color: transparent; }
 
+  .toolbar-search { margin-bottom: 12px; }
+  .toolbar-search input {
+    width: 100%; font-family: 'Sora', sans-serif; font-size: 14px;
+    border: 1px solid var(--border); border-radius: var(--radius-sm);
+    padding: 10px 12px; background: var(--surface); color: var(--text);
+  }
+  .entrada-cat-row { display: flex; gap: 8px; margin-bottom: 12px; flex-wrap: wrap; }
+  .entrada-cat-btn { padding: 7px 14px; border-radius: 20px; font-size: 12px; font-weight: 600; font-family: 'Sora', sans-serif; cursor: pointer; border: 1px solid var(--border); background: var(--surface); color: var(--text2); }
+  .entrada-cat-btn.active { background: var(--accent-dark); color: white; border-color: transparent; }
+  .hist-btn-danger { background: var(--red-light); color: var(--red); border-color: #f5c6c2; }
+  .abono-del-btn { margin-left: 6px; border: none; background: transparent; color: var(--red); font-weight: 700; cursor: pointer; }
+
   .empty { text-align: center; padding: 28px; font-size: 13px; color: var(--text3); }
 
   /* Toast */
@@ -859,6 +998,8 @@
       <div class="card"><div class="card-label">Balastre alcanza</div><div class="card-value" id="cap-balastre">—</div><div class="card-unit">bultos de cemento</div></div>
       <div class="card"><div class="card-label">Confetillo alcanza</div><div class="card-value" id="cap-confetillo">—</div><div class="card-unit">bultos de cemento</div></div>
       <div class="card"><div class="card-label">Notas por cobrar</div><div class="card-value" id="val-notas-pendientes">—</div><div class="card-unit" id="val-monto-pendiente">clientes</div></div>
+      <div class="card"><div class="card-label">Uso nube estimado</div><div class="card-value" id="storage-used">—</div><div class="card-unit">datos guardados</div></div>
+      <div class="card"><div class="card-label">Disponible aprox.</div><div class="card-value" id="storage-remaining">—</div><div class="card-unit">referencia Spark 1 GB</div></div>
     </div>
   </div>
 
@@ -866,8 +1007,13 @@
   <div class="section" id="tab-entrada">
     <div class="form-box">
       <div class="form-title">Registrar entrada de insumo</div>
+      <div class="entrada-cat-row">
+        <button class="entrada-cat-btn active" data-tipo="cemento" onclick="setEntradaCategoria('cemento', this)">Cemento</button>
+        <button class="entrada-cat-btn" data-tipo="balastre" onclick="setEntradaCategoria('balastre', this)">Balastre</button>
+        <button class="entrada-cat-btn" data-tipo="confetillo" onclick="setEntradaCategoria('confetillo', this)">Confetillo</button>
+      </div>
       <div class="form-grid">
-        <div class="form-group">
+        <div class="form-group" style="display:none">
           <label>Insumo</label>
           <select id="in-tipo" onchange="updateEntradaPreview()">
             <option value="cemento">Cemento (bultos)</option>
@@ -878,6 +1024,17 @@
         <div class="form-group">
           <label id="in-cant-label">Cantidad</label>
           <input type="number" id="in-cant" min="1" value="1" oninput="updateEntradaPreview()">
+        </div>
+        <div class="form-group">
+          <label>Categoría</label>
+          <select id="in-categoria-producto">
+            <option value="tabicon">Tabicón</option>
+            <option value="tabiqueChiquito">Tabique chiquito</option>
+          </select>
+        </div>
+        <div class="form-group" id="in-precio-ton-wrap" style="display:none">
+          <label>Precio por tonelada ($)</label>
+          <input type="number" id="in-precio-ton" min="0" value="" step="0.01" oninput="updateEntradaPreview()" placeholder="Solo cemento">
         </div>
         <div class="form-group">
           <label>Proveedor</label>
@@ -998,6 +1155,10 @@
       </div>
     </div>
 
+    <div class="toolbar-search">
+      <input type="text" id="notas-search" placeholder="Buscar por cliente, producto, fecha o monto" oninput="setNotasSearch(this.value)">
+    </div>
+
     <div class="subtab-row">
       <button class="subtab active" onclick="showSubtab('notas-pendientes', this)">Por cobrar</button>
       <button class="subtab" onclick="showSubtab('notas-pagadas', this)">Cobradas</button>
@@ -1031,7 +1192,7 @@
     document.querySelectorAll('.nav-btn').forEach(b => b.classList.remove('active'));
     document.getElementById('tab-' + id).classList.add('active');
     btn.classList.add('active');
-    if (id === 'entrada') setTimeout(() => { if (window.updateEntradaPreview) updateEntradaPreview(); }, 10);
+    if (id === 'entrada') setTimeout(() => { if (window.setEntradaCategoria) setEntradaCategoria(gv('in-tipo') || 'cemento'); if (window.updateEntradaPreview) updateEntradaPreview(); }, 10);
     if (id === 'produccion') setTimeout(() => { if (window.updateProdPreview) updateProdPreview(); refreshDateInputs(); }, 10);
     if (id === 'venta') setTimeout(() => { if (window.updateVentaPreview) updateVentaPreview(); }, 10);
     if (id === 'notas') setTimeout(() => { if (window.updateNotaPreview) updateNotaPreview(); }, 10);
