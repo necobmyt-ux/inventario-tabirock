@@ -263,13 +263,13 @@
       const costoBulto = precioTon > 0 ? precioTon / 20 : 0;
       prev = '<b>' + fmt(cant) + '</b> bultos = <b>' + fmt(toneladas, 2) + ' t</b> · costo por bulto: <b>$' + fmt(costoBulto, 2) + '</b> · total: <b>$' + fmt(total, 2) + '</b><br>Est. producción: <b>' + fmt(cant * 125) + '</b> piezas | balastre: <b>' + fmt(cant * 0.36, 3) + ' m³</b> · confetillo: <b>' + fmt(cant * 0.27, 3) + ' m³</b>';
     } else if (tipo === 'balastre') {
-      lbl.textContent = 'Viajes (1 viaje = 13 m³)';
+      lbl.textContent = 'Cantidad real (m³)';
       if (precioWrap) precioWrap.style.display = 'none';
-      prev = '<b>' + fmt(cant) + '</b> viaje(s) = <b>' + fmt(cant * 13, 2) + ' m³</b> → alcanza para <b>' + fmt(Math.floor(cant * 13 / 0.36)) + '</b> bultos';
+      prev = '<b>' + fmt(cant, 2) + '</b> m³ de balastre → alcanza para <b>' + fmt(Math.floor(cant / 0.36)) + '</b> bultos';
     } else {
-      lbl.textContent = 'Viajes (1 viaje = 13 m³)';
+      lbl.textContent = 'Cantidad real (m³)';
       if (precioWrap) precioWrap.style.display = 'none';
-      prev = '<b>' + fmt(cant) + '</b> viaje(s) = <b>' + fmt(cant * 13, 2) + ' m³</b> → alcanza para <b>' + fmt(Math.floor(cant * 13 / 0.27)) + '</b> bultos';
+      prev = '<b>' + fmt(cant, 2) + '</b> m³ de confetillo → alcanza para <b>' + fmt(Math.floor(cant / 0.27)) + '</b> bultos';
     }
     document.getElementById('entrada-preview').innerHTML = prev;
   };
@@ -299,22 +299,22 @@
         extra.push('$' + fmt(costoBulto, 2) + '/bulto');
       }
     } else if (tipo === 'balastre') {
-      effect = { balastre: cant * 13 };
-      inv.balastre += cant * 13;
+      effect = { balastre: cant };
+      inv.balastre += cant;
       insumo = 'Balastre';
-      cantidad = fmt(cant) + ' viaje(s) (' + fmt(cant * 13, 2) + ' m³)';
+      cantidad = fmt(cant, 2) + ' m³';
     } else {
-      effect = { confetillo: cant * 13 };
-      inv.confetillo += cant * 13;
+      effect = { confetillo: cant };
+      inv.confetillo += cant;
       insumo = 'Confetillo';
-      cantidad = fmt(cant) + ' viaje(s) (' + fmt(cant * 13, 2) + ' m³)';
+      cantidad = fmt(cant, 2) + ' m³';
     }
     if (proveedor) extra.push(proveedor);
     if (nota) extra.push(nota);
     addHist('Entrada', insumo, cantidad, 'Entrada', extra.join(' · '), {
       editable: true,
       effect,
-      raw: { tipo, cant, proveedor, nota, categoriaProducto: normalizeProductoKey(gv('in-categoria-producto') || 'tabicon'), precioTon }
+      raw: { tipo, cant, m3: (tipo === 'cemento' ? null : cant), proveedor, nota, categoriaProducto: normalizeProductoKey(gv('in-categoria-producto') || 'tabicon'), precioTon }
     });
     saveInv();
     sv('in-cant', 1); sv('in-proveedor', ''); sv('in-nota', ''); sv('in-precio-ton', '');
@@ -487,8 +487,16 @@
       let insumo = '', cantidad = '', effect = {};
       raw.tipo = String(raw.tipo || '').trim().toLowerCase();
       if (raw.tipo === 'cemento') { insumo = 'Cemento'; cantidad = fmt(cant) + ' bultos'; effect = { cemento: cant }; }
-      else if (raw.tipo === 'balastre') { insumo = 'Balastre'; cantidad = fmt(cant) + ' viaje(s) (' + fmt(cant * 13, 2) + ' m³)'; effect = { balastre: cant * 13 }; }
-      else if (raw.tipo === 'confetillo') { insumo = 'Confetillo'; cantidad = fmt(cant) + ' viaje(s) (' + fmt(cant * 13, 2) + ' m³)'; effect = { confetillo: cant * 13 }; }
+      else if (raw.tipo === 'balastre') {
+        const m3 = Number(raw.m3 ?? cant);
+        if (m3 <= 0) return null;
+        insumo = 'Balastre'; cantidad = fmt(m3, 2) + ' m³'; effect = { balastre: m3 }; raw.m3 = m3; raw.cant = m3;
+      }
+      else if (raw.tipo === 'confetillo') {
+        const m3 = Number(raw.m3 ?? cant);
+        if (m3 <= 0) return null;
+        insumo = 'Confetillo'; cantidad = fmt(m3, 2) + ' m³'; effect = { confetillo: m3 }; raw.m3 = m3; raw.cant = m3;
+      }
       else return null;
       const categoriaProducto = normalizeProductoKey(raw.categoriaProducto || raw.producto || 'tabicon');
       const precioTon = Number(raw.precioTon) || 0;
@@ -516,7 +524,7 @@
         mov: 'Entrada',
         editable: true,
         effect,
-        raw: { tipo: raw.tipo, cant, proveedor: proveedorTxt, nota: notaTxt, categoriaProducto, precioTon }
+        raw: { tipo: raw.tipo, cant, m3: raw.tipo === 'cemento' ? null : Number(raw.m3 ?? cant), proveedor: proveedorTxt, nota: notaTxt, categoriaProducto, precioTon }
       };
     }
     if (original.mov === 'Producción') {
@@ -573,9 +581,10 @@
       const tipo = prompt('Tipo: cemento, balastre o confetillo', raw.tipo || 'cemento');
       if (tipo === null) return;
       raw.tipo = String(tipo).trim().toLowerCase();
-      const cant = prompt(raw.tipo === 'cemento' ? 'Cantidad de bultos:' : 'Cantidad de viajes:', raw.cant ?? '');
+      const cant = prompt(raw.tipo === 'cemento' ? 'Cantidad de bultos:' : 'Cantidad real en m³:', raw.tipo === 'cemento' ? (raw.cant ?? '') : (raw.m3 ?? raw.cant ?? ''));
       if (cant === null) return;
       raw.cant = Number(cant);
+      if (raw.tipo !== 'cemento') raw.m3 = Number(cant);
       const categoriaProducto = prompt('Categoría asociada: tabicon o tabiqueChiquito', raw.categoriaProducto || 'tabicon');
       if (categoriaProducto === null) return;
       raw.categoriaProducto = String(categoriaProducto).trim();
@@ -611,6 +620,7 @@
       const cant = prompt('Piezas vendidas:', raw.cant ?? '');
       if (cant === null) return;
       raw.cant = Number(cant);
+      if (raw.tipo !== 'cemento') raw.m3 = Number(cant);
       const precio = prompt('Precio unitario:', raw.precio ?? '0');
       if (precio === null) return;
       raw.precio = Number(precio);
@@ -1141,13 +1151,13 @@
           <label>Insumo</label>
           <select id="in-tipo" onchange="updateEntradaPreview()">
             <option value="cemento">Cemento (bultos)</option>
-            <option value="balastre">Balastre (viajes)</option>
-            <option value="confetillo">Confetillo (viajes)</option>
+            <option value="balastre">Balastre (m³ reales)</option>
+            <option value="confetillo">Confetillo (m³ reales)</option>
           </select>
         </div>
         <div class="form-group">
           <label id="in-cant-label">Cantidad</label>
-          <input type="number" id="in-cant" min="1" value="1" oninput="updateEntradaPreview()">
+          <input type="number" id="in-cant" min="0.01" value="1" step="0.01" oninput="updateEntradaPreview()">
         </div>
         <div class="form-group">
           <label>Categoría</label>
