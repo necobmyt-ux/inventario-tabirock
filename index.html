@@ -40,6 +40,7 @@
   let notas = {};
   let entradaCategoria = 'cemento';
   let notasSearch = '';
+  const SECURITY_PIN = 'Tabirock';
 
   // ── Inventario ──────────────────────────────────────────────
   onValue(ref(db, 'inventario'), snap => {
@@ -366,11 +367,12 @@
       '<b>' + fmt(cant) + '</b> piezas de ' + productLabel(producto).toLowerCase() + ' × $<b>' + fmt(precio, 2) + '</b> = <b>$' + fmt(cant * precio, 2) + '</b>';
   };
 
-  function crearNotaDesdeVenta({ cliente = '', producto = 'tabicon', cant = 0, precio = 0, nota = '' } = {}) {
+  function crearNotaDesdeVenta({ cliente = '', obra = '', producto = 'tabicon', cant = 0, precio = 0, nota = '' } = {}) {
     const total = (Number(cant) || 0) * (Number(precio) || 0);
     const fechaHoy = new Date().toLocaleDateString('es-MX', { day: '2-digit', month: '2-digit', year: '2-digit' });
     push(ref(db, 'notas'), {
       cliente: cliente || 'Cliente',
+      obra: obra || 'General',
       producto,
       cant: Number(cant) || 0,
       precio: Number(precio) || 0,
@@ -394,11 +396,11 @@
     addHist('Venta', (gv('venta-cliente') || 'Cliente') + ' · ' + productLabel(producto), fmt(cant) + ' piezas | $' + fmt(total, 2), 'Venta', gv('venta-nota'), {
       editable: true,
       effect: { [producto]: -cant },
-      raw: { producto, cant, precio, cliente: gv('venta-cliente') || '', nota: gv('venta-nota') || '' }
+      raw: { producto, cant, precio, cliente: gv('venta-cliente') || '', obra: gv('venta-obra') || 'General', nota: gv('venta-nota') || '' }
     });
-    crearNotaDesdeVenta({ producto, cant, precio, cliente: gv('venta-cliente') || '', nota: gv('venta-nota') || '' });
+    crearNotaDesdeVenta({ producto, cant, precio, cliente: gv('venta-cliente') || '', obra: gv('venta-obra') || 'General', nota: gv('venta-nota') || '' });
     saveInv();
-    sv('venta-cant', 100); sv('venta-precio', 0); sv('venta-cliente', ''); sv('venta-nota', '');
+    sv('venta-cant', 100); sv('venta-precio', 0); sv('venta-cliente', ''); sv('venta-obra', ''); sv('venta-nota', '');
     updateVentaPreview();
     toast('✓ Venta registrada y nota por cobrar generada.');
   };
@@ -406,6 +408,7 @@
   // ── NOTAS ────────────────────────────────────────────────────
   window.updateNotaPreview = function() {
     const producto = gv('nota-producto') || 'tabicon';
+    const obra = (gv('nota-obra') || 'General').trim() || 'General';
     const cant = parseFloat(gv('nota-cant')) || 0, precio = parseFloat(gv('nota-precio')) || 0;
     document.getElementById('nota-preview').innerHTML =
       '<b>' + fmt(cant) + '</b> piezas de ' + productLabel(producto).toLowerCase() + ' × $<b>' + fmt(precio, 2) + '</b> = <b>$' + fmt(cant * precio, 2) + '</b> total';
@@ -414,6 +417,7 @@
   window.registrarNota = function() {
     const cliente = gv('nota-cliente').trim();
     const producto = gv('nota-producto') || 'tabicon';
+    const obra = (gv('nota-obra') || 'General').trim() || 'General';
     const cant = parseFloat(gv('nota-cant')) || 0;
     const precio = parseFloat(gv('nota-precio')) || 0;
     const fechaLimite = gv('nota-fecha');
@@ -421,18 +425,19 @@
     if (cant <= 0 || precio <= 0) { toast('Ingresa cantidad y precio válidos.'); return; }
     if (!fechaLimite) { toast('Ingresa la fecha límite de pago.'); return; }
     const total = cant * precio;
-    const nueva = { cliente, producto, cant, precio, total, fechaLimite, abonos: [], estado: 'pendiente', fecha: new Date().toLocaleDateString('es-MX', { day: '2-digit', month: '2-digit', year: '2-digit' }), origen: 'manual' };
+    const nueva = { cliente, obra, producto, cant, precio, total, fechaLimite, abonos: [], estado: 'pendiente', fecha: new Date().toLocaleDateString('es-MX', { day: '2-digit', month: '2-digit', year: '2-digit' }), origen: 'manual' };
     push(ref(db, 'notas'), nueva);
     addHist('Nota por cobrar', cliente + ' · ' + productLabel(producto), fmt(cant) + ' piezas | $' + fmt(total, 2), 'Nota', 'Sin mover inventario', {
       editable: false,
       effect: {}
     });
-    sv('nota-cliente', ''); sv('nota-cant', 0); sv('nota-precio', 0); sv('nota-fecha', '');
+    sv('nota-cliente', ''); sv('nota-obra', ''); sv('nota-cant', 0); sv('nota-precio', 0); sv('nota-fecha', '');
     updateNotaPreview();
     toast('✓ Nota registrada sin descontar inventario.');
   };
 
   window.abonar = function(id) {
+    if (!requireSecurityPin('registrar un abono')) return;
     const nota = normalizeNota(id, notas[id] || {});
     const sal = saldo(nota);
     if (sal <= 0) { toast('Esa nota ya no tiene saldo pendiente.'); return; }
@@ -449,6 +454,7 @@
   };
 
   window.editarAbono = function(id, index) {
+    if (!requireSecurityPin('editar un abono')) return;
     const nota = normalizeNota(id, notas[id] || {});
     const actual = nota.abonos[index];
     if (!actual) return;
@@ -463,6 +469,7 @@
   };
 
   window.eliminarAbono = function(id, index) {
+    if (!requireSecurityPin('borrar un abono')) return;
     const nota = normalizeNota(id, notas[id] || {});
     if (!nota.abonos[index]) return;
     if (!confirm('¿Borrar este abono?')) return;
@@ -475,6 +482,7 @@
   };
 
   window.marcarPagada = function(id) {
+    if (!requireSecurityPin('marcar una nota como pagada')) return;
     const nota = normalizeNota(id, notas[id] || {});
     const sal = saldo(nota);
     if (sal <= 0) { toast('Esa nota ya está pagada.'); return; }
@@ -485,8 +493,19 @@
   };
 
   window.eliminarNota = function(id) {
+    if (!requireSecurityPin('eliminar esta nota')) return;
     if (confirm('¿Eliminar esta nota?')) { remove(ref(db, 'notas/' + id)); toast('Nota eliminada.'); }
   };
+
+  function requireSecurityPin(action = 'realizar esta acción') {
+    const pin = prompt('Ingresa el PIN para ' + action + ':');
+    if (pin === null) return false;
+    if (pin !== SECURITY_PIN) {
+      toast('PIN incorrecto.');
+      return false;
+    }
+    return true;
+  }
 
   function rebuildAndSaveInventory(nextEntries) {
     const rebuilt = rebuildInventoryFromHist(nextEntries);
@@ -511,6 +530,7 @@
       id,
       ...n,
       producto: normalizeProductoKey(n.producto),
+      obra: (n.obra || 'General').toString().trim() || 'General',
       cant: Number(n.cant) || 0,
       precio: Number(n.precio) || 0,
       total,
@@ -617,13 +637,14 @@
         mov: 'Venta',
         editable: true,
         effect: { [producto]: -cant },
-        raw: { producto, cant, precio, cliente: raw.cliente || '', nota: raw.nota || '' }
+        raw: { producto, cant, precio, cliente: raw.cliente || '', obra: raw.obra || 'General', nota: raw.nota || '' }
       };
     }
     return null;
   }
 
   window.editarMovimiento = function(id) {
+    if (!requireSecurityPin('editar este movimiento')) return;
     const item = historial[id];
     if (!item) return;
     if (!item.editable || !item.raw) { toast('Este movimiento no se puede editar.'); return; }
@@ -681,6 +702,9 @@
       const cliente = prompt('Cliente (opcional):', raw.cliente || '');
       if (cliente === null) return;
       raw.cliente = cliente;
+      const obra = prompt('Obra:', raw.obra || 'General');
+      if (obra === null) return;
+      raw.obra = obra || 'General';
       const nota = prompt('Nota (opcional):', raw.nota || '');
       if (nota === null) return;
       raw.nota = nota;
@@ -708,6 +732,7 @@
   };
 
   window.eliminarMovimiento = function(id) {
+    if (!requireSecurityPin('borrar este movimiento')) return;
     const item = historial[id];
     if (!item) return;
     if (!item.editable) { toast('Este movimiento no se puede borrar.'); return; }
@@ -727,25 +752,38 @@
 
   function renderNotas() {
     const hoy = new Date(); hoy.setHours(0,0,0,0);
-    const pendientes = [], pagadas = [];
     const query = (notasSearch || '').toLowerCase().trim();
     const notasLista = Object.entries(notas)
       .map(([id, n]) => normalizeNota(id, n))
       .filter(n => {
         if (!query) return true;
-        const haystack = [n.cliente, productLabel(n.producto), n.fecha, n.fechaLimite, n.estado, n.total, n.cant].join(' ').toLowerCase();
+        const haystack = [n.cliente, n.obra, productLabel(n.producto), n.fecha, n.fechaLimite, n.estado, n.total, n.cant].join(' ').toLowerCase();
         return haystack.includes(query);
       })
       .sort((a, b) => noteTimeValue(b) - noteTimeValue(a));
 
+    const grouped = {};
     notasLista.forEach(n => {
+      const clienteKey = (n.cliente || 'Cliente sin nombre').trim() || 'Cliente sin nombre';
+      if (!grouped[clienteKey]) grouped[clienteKey] = { cliente: clienteKey, totalPendiente: 0, totalPagado: 0, obras: {} };
+      const obraKey = (n.obra || 'General').trim() || 'General';
+      if (!grouped[clienteKey].obras[obraKey]) grouped[clienteKey].obras[obraKey] = [];
+      grouped[clienteKey].obras[obraKey].push(n);
+      const sal = saldo(n);
+      grouped[clienteKey].totalPendiente += sal;
+      grouped[clienteKey].totalPagado += Math.max(0, (Number(n.total) || 0) - sal);
+    });
+
+    const clientesOrdenados = Object.values(grouped).sort((a, b) => b.totalPendiente - a.totalPendiente || a.cliente.localeCompare(b.cliente));
+
+    function notaCard(n) {
       const sal = saldo(n);
       const fechaLimiteISO = toInputDate(n.fechaLimite || '');
       const vencida = fechaLimiteISO && new Date(fechaLimiteISO + 'T00:00:00') < hoy && n.estado !== 'pagada';
-      const row = `
+      return `
         <div class="nota-card ${vencida ? 'vencida' : ''} ${n.estado === 'pagada' ? 'pagada' : ''}">
           <div class="nota-top">
-            <span class="nota-cliente">${n.cliente || 'Cliente sin nombre'}</span>
+            <span class="nota-cliente">${n.cliente || 'Cliente sin nombre'} <small class="nota-obra-pill">${n.obra || 'General'}</small></span>
             <span class="nota-badge ${n.estado === 'pagada' ? 'badge-pagada' : vencida ? 'badge-vencida' : 'badge-pendiente'}">${n.estado === 'pagada' ? 'Pagada' : vencida ? 'Vencida' : 'Pendiente'}</span>
           </div>
           <div class="nota-info">
@@ -764,15 +802,45 @@
             <button class="btn-accion btn-eliminar" onclick="eliminarNota('${n.id}')">Eliminar</button>
           </div>
         </div>`;
-      n.estado === 'pagada' ? pagadas.push(row) : pendientes.push(row);
-    });
+    }
 
-    const emptyMsg = query ? '<div class="empty">No se encontraron notas con ese texto.</div>' : '<div class="empty">Sin notas pendientes.</div>';
-    const emptyPaid = query ? '<div class="empty">No se encontraron notas cobradas con ese texto.</div>' : '<div class="empty">Sin notas pagadas.</div>';
+    function renderClientes(targetEstado) {
+      const cards = clientesOrdenados.map(cliente => {
+        const obrasHtml = Object.entries(cliente.obras)
+          .map(([obra, items]) => {
+            const filtradas = items.filter(n => targetEstado === 'pagada' ? n.estado === 'pagada' : n.estado !== 'pagada');
+            if (!filtradas.length) return '';
+            const obraTotal = filtradas.reduce((s, n) => s + (targetEstado === 'pagada' ? ((Number(n.total) || 0) - saldo(n)) : saldo(n)), 0);
+            return `
+              <div class="obra-group">
+                <div class="obra-header">
+                  <span>${obra}</span>
+                  <span>$${fmt(obraTotal, 2)}</span>
+                </div>
+                ${filtradas.sort((a,b)=>noteTimeValue(b)-noteTimeValue(a)).map(notaCard).join('')}
+              </div>`;
+          }).join('');
+        if (!obrasHtml) return '';
+        const totalCliente = targetEstado === 'pagada' ? cliente.totalPagado : cliente.totalPendiente;
+        return `
+          <div class="cliente-group">
+            <div class="cliente-header">
+              <div>
+                <div class="cliente-nombre">${cliente.cliente}</div>
+                <div class="cliente-sub">${Object.keys(cliente.obras).length} obra(s)</div>
+              </div>
+              <div class="cliente-total">$${fmt(totalCliente, 2)}</div>
+            </div>
+            ${obrasHtml}
+          </div>`;
+      }).join('');
+      return cards || `<div class="empty">${query ? 'No se encontraron notas con ese texto.' : (targetEstado === 'pagada' ? 'Sin notas pagadas.' : 'Sin notas pendientes.')}</div>`;
+    }
+
     const elP = document.getElementById('notas-pendientes');
     const elPg = document.getElementById('notas-pagadas');
-    if (elP) elP.innerHTML = pendientes.length ? pendientes.join('') : emptyMsg;
-    if (elPg) elPg.innerHTML = pagadas.length ? pagadas.join('') : emptyPaid;
+    if (elP) elP.innerHTML = renderClientes('pendiente');
+    if (elPg) elPg.innerHTML = renderClientes('pagada');
   }
 
   // ── HISTORIAL ────────────────────────────────────────────────
@@ -1106,6 +1174,15 @@
   .btn-eliminar { background: var(--red-light); color: var(--red); border-color: #f5c6c2; }
   .abonos-lista { font-size: 12px; color: var(--text3); margin: 6px 0; display: flex; flex-wrap: wrap; gap: 6px; }
   .abonos-lista span { background: var(--surface2); padding: 2px 8px; border-radius: 20px; }
+  .cliente-group { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 14px; margin-bottom: 14px; box-shadow: var(--shadow); }
+  .cliente-header { display:flex; justify-content:space-between; align-items:flex-start; gap:12px; margin-bottom:10px; }
+  .cliente-nombre { font-size:16px; font-weight:600; }
+  .cliente-sub { font-size:12px; color: var(--text3); margin-top:2px; }
+  .cliente-total { font-size:18px; font-weight:700; color: var(--accent-dark); }
+  .obra-group { background: var(--bg); border: 1px solid var(--border); border-radius: var(--radius-sm); padding: 10px; margin-top: 10px; }
+  .obra-header { display:flex; justify-content:space-between; align-items:center; font-size:13px; font-weight:600; color: var(--text2); margin-bottom:8px; }
+  .nota-obra-pill { font-size:11px; font-weight:600; color: var(--accent-dark); background: var(--accent-light); padding: 3px 8px; border-radius: 999px; margin-left: 6px; }
+  .security-hint { font-size: 12px; color: var(--text3); margin-top: 8px; }
 
   .subtab-row { display: flex; gap: 8px; margin-bottom: 14px; }
   .subtab { padding: 7px 16px; border-radius: 20px; font-size: 13px; font-weight: 600; font-family: 'Sora', sans-serif; cursor: pointer; border: 1px solid var(--border); background: var(--surface); color: var(--text2); transition: all 0.15s; }
@@ -1288,6 +1365,10 @@
           <input type="text" id="venta-cliente" placeholder="Opcional">
         </div>
         <div class="form-group">
+          <label>Obra</label>
+          <input type="text" id="venta-obra" placeholder="Ej. Casa López / General">
+        </div>
+        <div class="form-group full">
           <label>Nota</label>
           <input type="text" id="venta-nota" placeholder="Opcional">
         </div>
@@ -1302,11 +1383,15 @@
   <!-- NOTAS -->
   <div class="section" id="tab-notas">
     <div class="form-box">
-      <div class="form-title">Nueva nota / cuenta por cobrar</div><div class="preview" style="margin-top:0;margin-bottom:12px">Esta sección ya no descuenta inventario. El inventario se mueve con Producción y Venta. Las ventas generan una nota pagada automáticamente.</div>
+      <div class="form-title">Nueva nota / cuenta por cobrar</div><div class="preview" style="margin-top:0;margin-bottom:12px">Esta sección ya no descuenta inventario. El inventario se mueve con Producción y Venta. Las ventas generan una nota pendiente automáticamente.</div>
       <div class="form-grid">
-        <div class="form-group full">
+        <div class="form-group">
           <label>Cliente</label>
           <input type="text" id="nota-cliente" placeholder="Nombre del cliente">
+        </div>
+        <div class="form-group">
+          <label>Obra</label>
+          <input type="text" id="nota-obra" placeholder="Ej. Casa López / General">
         </div>
         <div class="form-group">
           <label>Producto</label>
@@ -1335,7 +1420,8 @@
     </div>
 
     <div class="toolbar-search">
-      <input type="text" id="notas-search" placeholder="Buscar por cliente, producto, fecha o monto" oninput="setNotasSearch(this.value)">
+      <input type="text" id="notas-search" placeholder="Buscar por cliente, obra, producto, fecha o monto" oninput="setNotasSearch(this.value)">
+      <div class="security-hint">Edición, borrado, abonos y marcar pagada requieren PIN.</div>
     </div>
 
     <div class="subtab-row">
