@@ -361,6 +361,24 @@
       '<b>' + fmt(cant) + '</b> piezas de ' + productLabel(producto).toLowerCase() + ' × $<b>' + fmt(precio, 2) + '</b> = <b>$' + fmt(cant * precio, 2) + '</b>';
   };
 
+  function crearNotaDesdeVenta({ cliente = '', producto = 'tabicon', cant = 0, precio = 0, nota = '' } = {}) {
+    const total = (Number(cant) || 0) * (Number(precio) || 0);
+    const fechaHoy = new Date().toLocaleDateString('es-MX', { day: '2-digit', month: '2-digit', year: '2-digit' });
+    push(ref(db, 'notas'), {
+      cliente: cliente || 'Cliente',
+      producto,
+      cant: Number(cant) || 0,
+      precio: Number(precio) || 0,
+      total,
+      fecha: fechaHoy,
+      fechaLimite: '',
+      abonos: total > 0 ? [{ monto: total, fecha: fechaHoy, auto: true }] : [],
+      estado: 'pagada',
+      origen: 'venta',
+      nota: nota || ''
+    });
+  }
+
   window.registrarVenta = function() {
     const producto = gv('venta-producto') || 'tabicon';
     const cant = parseFloat(gv('venta-cant')) || 0, precio = parseFloat(gv('venta-precio')) || 0;
@@ -373,10 +391,11 @@
       effect: { [producto]: -cant },
       raw: { producto, cant, precio, cliente: gv('venta-cliente') || '', nota: gv('venta-nota') || '' }
     });
+    crearNotaDesdeVenta({ producto, cant, precio, cliente: gv('venta-cliente') || '', nota: gv('venta-nota') || '' });
     saveInv();
     sv('venta-cant', 100); sv('venta-precio', 0); sv('venta-cliente', ''); sv('venta-nota', '');
     updateVentaPreview();
-    toast('✓ Venta registrada.');
+    toast('✓ Venta registrada y nota generada.');
   };
 
   // ── NOTAS ────────────────────────────────────────────────────
@@ -396,16 +415,16 @@
     if (!cliente) { toast('Ingresa el nombre del cliente.'); return; }
     if (cant <= 0 || precio <= 0) { toast('Ingresa cantidad y precio válidos.'); return; }
     if (!fechaLimite) { toast('Ingresa la fecha límite de pago.'); return; }
-    if (inv[producto] < cant) { toast('Solo hay ' + fmt(inv[producto]) + ' piezas disponibles de ' + productLabel(producto).toLowerCase() + '.'); return; }
-    inv[producto] -= cant;
     const total = cant * precio;
-    const nueva = { cliente, producto, cant, precio, total, fechaLimite, abonos: [], estado: 'pendiente', fecha: new Date().toLocaleDateString('es-MX', { day: '2-digit', month: '2-digit', year: '2-digit' }) };
+    const nueva = { cliente, producto, cant, precio, total, fechaLimite, abonos: [], estado: 'pendiente', fecha: new Date().toLocaleDateString('es-MX', { day: '2-digit', month: '2-digit', year: '2-digit' }), origen: 'manual' };
     push(ref(db, 'notas'), nueva);
-    addHist('Nota a crédito', cliente + ' · ' + productLabel(producto), fmt(cant) + ' piezas | $' + fmt(total, 2), 'Nota');
-    saveInv();
+    addHist('Nota por cobrar', cliente + ' · ' + productLabel(producto), fmt(cant) + ' piezas | $' + fmt(total, 2), 'Nota', 'Sin mover inventario', {
+      editable: false,
+      effect: {}
+    });
     sv('nota-cliente', ''); sv('nota-cant', 0); sv('nota-precio', 0); sv('nota-fecha', '');
     updateNotaPreview();
-    toast('✓ Nota registrada.');
+    toast('✓ Nota registrada sin descontar inventario.');
   };
 
   window.abonar = function(id) {
@@ -444,6 +463,16 @@
   window.eliminarNota = function(id) {
     if (confirm('¿Eliminar esta nota?')) { remove(ref(db, 'notas/' + id)); toast('Nota eliminada.'); }
   };
+
+  function rebuildAndSaveInventory(nextEntries) {
+    const rebuilt = rebuildInventoryFromHist(nextEntries);
+    if (!rebuilt) {
+      toast('No se pudo recalcular el inventario con ese cambio.');
+      return false;
+    }
+    saveInvState(rebuilt);
+    return true;
+  }
 
   function saldo(n) {
     const abonado = (n.abonos || []).reduce((s, a) => s + (Number(a.monto) || 0), 0);
@@ -634,16 +663,9 @@
 
     const updated = buildHistFromRaw(raw, item);
     if (!updated) { toast('Datos inválidos. No se guardó el cambio.'); return; }
-    const efOld = normalizeEffect(item.effect || {});
-    const currentWithoutOld = applyEffect(inv, {
-      tabicon: -efOld.tabicon,
-      tabiqueChiquito: -efOld.tabiqueChiquito,
-      cemento: -efOld.cemento,
-      balastre: -efOld.balastre,
-      confetillo: -efOld.confetillo
-    });
-    if (!canApplyEffect(currentWithoutOld, updated.effect || {})) { toast('Ese cambio dejaría el inventario negativo.'); return; }
-    const nextInv = applyEffect(currentWithoutOld, updated.effect || {});
+    const candidateEntries = getHistEntries().map(entry => entry.id === id ? { ...entry, ...updated } : entry);
+    const rebuilt = rebuildInventoryFromHist(candidateEntries);
+    if (!rebuilt) { toast('Ese cambio dejaría el inventario negativo.'); return; }
     update(ref(db, 'historial/' + id), {
       fecha: updated.fecha,
       fechaISO: updated.fechaISO,
@@ -656,28 +678,21 @@
       effect: updated.effect,
       raw: updated.raw
     });
-    saveInvState(nextInv);
-    toast('✓ Movimiento editado.');
+    saveInvState(rebuilt);
+    toast('✓ Movimiento editado y stock recalculado.');
   };
 
   window.eliminarMovimiento = function(id) {
     const item = historial[id];
     if (!item) return;
-    if (!item.editable || !item.effect) { toast('Este movimiento no se puede borrar.'); return; }
+    if (!item.editable) { toast('Este movimiento no se puede borrar.'); return; }
     if (!confirm('¿Eliminar este movimiento del historial?')) return;
-    const ef = normalizeEffect(item.effect || {});
-    const reverseEffect = {
-      tabicon: -ef.tabicon,
-      tabiqueChiquito: -ef.tabiqueChiquito,
-      cemento: -ef.cemento,
-      balastre: -ef.balastre,
-      confetillo: -ef.confetillo
-    };
-    if (!canApplyEffect(inv, reverseEffect)) { toast('No se pudo borrar porque dejaría inventario negativo.'); return; }
-    const nextInv = applyEffect(inv, reverseEffect);
+    const candidateEntries = getHistEntries().filter(entry => entry.id !== id);
+    const rebuilt = rebuildInventoryFromHist(candidateEntries);
+    if (!rebuilt) { toast('No se pudo borrar porque dejaría inventario negativo.'); return; }
     remove(ref(db, 'historial/' + id));
-    saveInvState(nextInv);
-    toast('✓ Movimiento eliminado.');
+    saveInvState(rebuilt);
+    toast('✓ Movimiento eliminado y stock recalculado.');
   };
 
   window.setNotasSearch = function(value = '') {
@@ -1221,7 +1236,7 @@
   <!-- VENTA -->
   <div class="section" id="tab-venta">
     <div class="form-box">
-      <div class="form-title">Registrar venta de contado</div>
+      <div class="form-title">Registrar venta</div>
       <div class="form-grid">
         <div class="form-group">
           <label>Producto</label>
@@ -1257,7 +1272,7 @@
   <!-- NOTAS -->
   <div class="section" id="tab-notas">
     <div class="form-box">
-      <div class="form-title">Nueva nota a crédito</div>
+      <div class="form-title">Nueva nota / cuenta por cobrar</div><div class="preview" style="margin-top:0;margin-bottom:12px">Esta sección ya no descuenta inventario. El inventario se mueve con Producción y Venta. Las ventas generan una nota pagada automáticamente.</div>
       <div class="form-grid">
         <div class="form-group full">
           <label>Cliente</label>
