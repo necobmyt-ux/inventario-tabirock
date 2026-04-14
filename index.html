@@ -372,8 +372,8 @@
       total,
       fecha: fechaHoy,
       fechaLimite: '',
-      abonos: total > 0 ? [{ monto: total, fecha: fechaHoy, auto: true }] : [],
-      estado: 'pagada',
+      abonos: [],
+      estado: total > 0 ? 'pendiente' : 'pagada',
       origen: 'venta',
       nota: nota || ''
     });
@@ -395,7 +395,7 @@
     saveInv();
     sv('venta-cant', 100); sv('venta-precio', 0); sv('venta-cliente', ''); sv('venta-nota', '');
     updateVentaPreview();
-    toast('✓ Venta registrada y nota generada.');
+    toast('✓ Venta registrada y nota por cobrar generada.');
   };
 
   // ── NOTAS ────────────────────────────────────────────────────
@@ -428,12 +428,13 @@
   };
 
   window.abonar = function(id) {
+    const nota = normalizeNota(id, notas[id] || {});
+    const sal = saldo(nota);
+    if (sal <= 0) { toast('Esa nota ya no tiene saldo pendiente.'); return; }
     const monto = parseFloat(prompt('¿Cuánto abona el cliente?'));
     if (!monto || monto <= 0) return;
-    const nota = notas[id];
-    const sal = saldo(nota);
     if (monto > sal) { toast('El abono supera el saldo pendiente ($' + fmt(sal, 2) + ').'); return; }
-    const abonos = nota.abonos || [];
+    const abonos = [...nota.abonos];
     abonos.push({ monto, fecha: new Date().toLocaleDateString('es-MX', { day: '2-digit', month: '2-digit', year: '2-digit' }) });
     const nuevoSaldo = sal - monto;
     const estado = nuevoSaldo <= 0 ? 'pagada' : 'pendiente';
@@ -442,6 +443,19 @@
     toast('✓ Abono de $' + fmt(monto, 2) + ' registrado.');
   };
 
+  window.editarAbono = function(id, index) {
+    const nota = normalizeNota(id, notas[id] || {});
+    const actual = nota.abonos[index];
+    if (!actual) return;
+    const nuevoMonto = parseFloat(prompt('Editar monto del abono', Number(actual.monto) || 0));
+    if (!nuevoMonto || nuevoMonto <= 0) return;
+    const abonos = [...nota.abonos];
+    abonos[index] = { ...actual, monto: nuevoMonto };
+    const nuevoSaldo = Math.max(0, nota.total - abonos.reduce((s, a) => s + (Number(a.monto) || 0), 0));
+    const estado = nuevoSaldo <= 0 ? 'pagada' : 'pendiente';
+    update(ref(db, 'notas/' + id), { abonos, estado });
+    toast('✓ Abono actualizado.');
+  };
 
   window.eliminarAbono = function(id, index) {
     const nota = normalizeNota(id, notas[id] || {});
@@ -456,8 +470,13 @@
   };
 
   window.marcarPagada = function(id) {
-    update(ref(db, 'notas/' + id), { estado: 'pagada' });
-    toast('✓ Nota marcada como pagada.');
+    const nota = normalizeNota(id, notas[id] || {});
+    const sal = saldo(nota);
+    if (sal <= 0) { toast('Esa nota ya está pagada.'); return; }
+    const abonos = [...nota.abonos, { monto: sal, fecha: new Date().toLocaleDateString('es-MX', { day: '2-digit', month: '2-digit', year: '2-digit' }), autoCierre: true }];
+    update(ref(db, 'notas/' + id), { abonos, estado: 'pagada' });
+    addHist('Abono', nota.cliente, '$' + fmt(sal, 2), 'Abono', 'Pago total');
+    toast('✓ Se registró un abono por el saldo restante.');
   };
 
   window.eliminarNota = function(id) {
@@ -731,7 +750,7 @@
             <span>Fecha: ${n.fecha || '—'}</span>
             <span>Límite: ${n.fechaLimite || '—'}</span>
           </div>
-          ${n.abonos.length > 0 ? '<div class="abonos-lista">' + n.abonos.map((a, idx) => `<span>Abono ${a.fecha || '—'}: $${fmt(Number(a.monto) || 0, 2)} <button class="abono-del-btn" onclick="eliminarAbono('${n.id}', ${idx})">×</button></span>`).join('') + '</div>' : ''}
+          ${n.abonos.length > 0 ? '<div class="abonos-lista">' + n.abonos.map((a, idx) => `<span>Abono ${a.fecha || '—'}: $${fmt(Number(a.monto) || 0, 2)} <button class="abono-edit-btn" onclick="editarAbono('${n.id}', ${idx})">Editar</button> <button class="abono-del-btn" onclick="eliminarAbono('${n.id}', ${idx})">×</button></span>`).join('') + '</div>' : ''}
           <div class="nota-saldo">Saldo pendiente: <b>$${fmt(sal, 2)}</b></div>
           <div class="nota-acciones">
             ${n.estado !== 'pagada' ? `<button class="btn-accion btn-abonar" onclick="abonar('${n.id}')">Abonar</button>` : ''}
@@ -1096,6 +1115,7 @@
   .entrada-cat-btn { padding: 7px 14px; border-radius: 20px; font-size: 12px; font-weight: 600; font-family: 'Sora', sans-serif; cursor: pointer; border: 1px solid var(--border); background: var(--surface); color: var(--text2); }
   .entrada-cat-btn.active { background: var(--accent-dark); color: white; border-color: transparent; }
   .hist-btn-danger { background: var(--red-light); color: var(--red); border-color: #f5c6c2; }
+  .abono-edit-btn { margin-left: 8px; border: none; background: transparent; color: var(--blue); font-weight: 600; font-size: 11px; cursor: pointer; }
   .abono-del-btn { margin-left: 6px; border: none; background: transparent; color: var(--red); font-weight: 700; cursor: pointer; }
 
   .empty { text-align: center; padding: 28px; font-size: 13px; color: var(--text3); }
