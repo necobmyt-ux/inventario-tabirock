@@ -329,14 +329,19 @@
 
   window.updateProdPreview = function() {
     const producto = gv('prod-producto') || 'tabicon';
-    const bultos = parseFloat(gv('prod-bultos')) || 0, piezas = parseFloat(gv('prod-piezas')) || 0;
+    const bultos = parseFloat(gv('prod-bultos')) || 0;
+    const piezasPorBulto = parseFloat(gv('prod-rendimiento')) || 125;
+    const piezas = Math.round(bultos * piezasPorBulto);
+    sv('prod-piezas', piezas > 0 ? piezas : 0);
     document.getElementById('prod-preview').innerHTML =
-      'Producto: <b>' + productLabel(producto) + '</b><br>Descuenta: <b>' + fmt(bultos) + ' bultos</b> cemento · <b>' + fmt(bultos * 0.36, 3) + ' m³</b> balastre · <b>' + fmt(bultos * 0.27, 3) + ' m³</b> confetillo<br>Agrega: <b>' + fmt(piezas) + ' piezas</b> · Rendimiento: <b>' + (bultos > 0 ? (piezas / bultos).toFixed(1) : '—') + '/bulto</b>';
+      'Producto: <b>' + productLabel(producto) + '</b><br>Descuenta: <b>' + fmt(bultos) + ' bultos</b> cemento · <b>' + fmt(bultos * 0.36, 3) + ' m³</b> balastre · <b>' + fmt(bultos * 0.27, 3) + ' m³</b> confetillo<br>Agrega: <b>' + fmt(piezas) + ' piezas</b> · Rendimiento: <b>' + fmt(piezasPorBulto, 2) + '/bulto</b>';
   };
 
   window.registrarProduccion = function() {
     const producto = gv('prod-producto') || 'tabicon';
-    const bultos = parseFloat(gv('prod-bultos')) || 0, piezas = parseFloat(gv('prod-piezas')) || 0;
+    const bultos = parseFloat(gv('prod-bultos')) || 0;
+    const piezasPorBulto = parseFloat(gv('prod-rendimiento')) || 125;
+    const piezas = Math.round(bultos * piezasPorBulto);
     if (bultos <= 0 || piezas <= 0) { toast('Ingresa valores válidos.'); return; }
     if (inv.cemento < bultos) { toast('Cemento insuficiente: ' + fmt(inv.cemento) + ' bultos disponibles.'); return; }
     if (inv.balastre < bultos * 0.36) { toast('Balastre insuficiente: ' + fmt(inv.balastre, 2) + ' m³ disponibles.'); return; }
@@ -347,7 +352,7 @@
       fecha: gv('prod-fecha'),
       editable: true,
       effect,
-      raw: { producto, bultos, piezas }
+      raw: { producto, bultos, piezas, piezasPorBulto }
     });
     saveInv();
     toast('✓ ' + fmt(piezas) + ' piezas de ' + productLabel(producto).toLowerCase() + ' registradas.');
@@ -578,7 +583,8 @@
     if (original.mov === 'Producción') {
       const producto = normalizeProductoKey(raw.producto || 'tabicon');
       const bultos = Number(raw.bultos) || 0;
-      const piezas = Number(raw.piezas ?? raw.tabicones) || 0;
+      const piezasPorBulto = Number(raw.piezasPorBulto) || (bultos > 0 ? ((Number(raw.piezas ?? raw.tabicones) || 0) / bultos) : 125) || 125;
+      const piezas = Math.round(bultos * piezasPorBulto);
       if (bultos <= 0 || piezas <= 0) return null;
       return {
         ...original,
@@ -587,11 +593,11 @@
         hora: original.hora || currentHora(),
         tipo: 'Producción',
         insumo: productLabel(producto),
-        cantidad: fmt(piezas) + ' piezas (' + fmt(bultos) + ' bultos)',
+        cantidad: fmt(piezas) + ' piezas (' + fmt(bultos) + ' bultos · ' + fmt(piezasPorBulto, 2) + '/bulto)',
         mov: 'Producción',
         editable: true,
         effect: { cemento: -bultos, balastre: -(bultos * 0.36), confetillo: -(bultos * 0.27), [producto]: piezas },
-        raw: { producto, bultos, piezas }
+        raw: { producto, bultos, piezas, piezasPorBulto }
       };
     }
     if (original.mov === 'Venta') {
@@ -656,9 +662,9 @@
       const producto = prompt('Producto: tabicon o tabiqueChiquito', raw.producto || 'tabicon');
       if (producto === null) return;
       raw.producto = String(producto).trim();
-      const piezas = prompt('Piezas producidas:', raw.piezas ?? raw.tabicones ?? '');
-      if (piezas === null) return;
-      raw.piezas = Number(piezas);
+      const piezasPorBulto = prompt('Tabiques por bulto:', raw.piezasPorBulto ?? ((Number(raw.piezas ?? raw.tabicones) && Number(raw.bultos)) ? (Number(raw.piezas ?? raw.tabicones) / Number(raw.bultos)).toFixed(2) : '125'));
+      if (piezasPorBulto === null) return;
+      raw.piezasPorBulto = Number(piezasPorBulto) || 125;
     }
 
     if (item.mov === 'Venta') {
@@ -1238,8 +1244,12 @@
           <input type="number" id="prod-bultos" min="1" value="1" oninput="updateProdPreview()">
         </div>
         <div class="form-group">
-          <label>Piezas producidas</label>
-          <input type="number" id="prod-piezas" min="1" value="125" oninput="updateProdPreview()">
+          <label>Tabiques por bulto</label>
+          <input type="number" id="prod-rendimiento" min="1" step="0.01" value="125" oninput="updateProdPreview()">
+        </div>
+        <div class="form-group">
+          <label>Piezas producidas (auto)</label>
+          <input type="number" id="prod-piezas" min="0" value="125" readonly>
         </div>
         <div class="form-group full">
           <label>Fecha de producción</label>
