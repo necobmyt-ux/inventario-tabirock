@@ -168,7 +168,9 @@
   function refreshDateInputs() {
     const today = new Date().toISOString().split('T')[0];
     const prodFecha = document.getElementById('prod-fecha');
+    const defFecha = document.getElementById('def-fecha');
     if (prodFecha && !prodFecha.value) prodFecha.value = today;
+    if (defFecha && !defFecha.value) defFecha.value = today;
   }
 
 
@@ -221,6 +223,11 @@
         if (fl < hoy) alertas += alerta('Nota vencida: ' + (n.cliente || 'Cliente') + ' — $' + fmt(saldo(n), 2));
       }
     });
+    const alertaDefectos = hasThreeConsecutiveHighDefectDays(70);
+    if (alertaDefectos) {
+      const etiquetas = alertaDefectos.fechas.map(f => fromInputDate(f) + ': ' + fmt(alertaDefectos.diarios[f]) ).join(' · ');
+      alertas += alerta('Defectos altos 3 días seguidos: ' + etiquetas + '. Revisa producción.');
+    }
     document.getElementById('alertas').innerHTML = alertas;
 
     // Resumen notas
@@ -328,6 +335,56 @@
     return key === 'tabiqueChiquito' ? 'Tabique chiquito' : 'Tabicón';
   }
 
+  function defectosPorDia() {
+    const totals = {};
+    getHistEntries().forEach(item => {
+      if (item.mov !== 'Defecto') return;
+      const fecha = item.fechaISO || toInputDate(item.fecha);
+      const piezas = Number((item.raw && (item.raw.piezas ?? item.raw.cant)) || 0) || 0;
+      if (!fecha || piezas <= 0) return;
+      totals[fecha] = (totals[fecha] || 0) + piezas;
+    });
+    return totals;
+  }
+
+  function hasThreeConsecutiveHighDefectDays(limit = 70) {
+    const totals = defectosPorDia();
+    const fechas = Object.keys(totals).sort();
+    if (fechas.length < 3) return null;
+    let streak = [];
+    for (const fecha of fechas) {
+      if ((totals[fecha] || 0) <= limit) {
+        streak = [];
+        continue;
+      }
+      if (!streak.length) {
+        streak = [fecha];
+        continue;
+      }
+      const prev = new Date(streak[streak.length - 1] + 'T00:00:00');
+      const curr = new Date(fecha + 'T00:00:00');
+      const diff = Math.round((curr - prev) / 86400000);
+      if (diff === 1) {
+        streak.push(fecha);
+      } else {
+        streak = [fecha];
+      }
+      if (streak.length >= 3) {
+        const ultimas = streak.slice(-3);
+        return { fechas: ultimas, total: ultimas.reduce((s, f) => s + (totals[f] || 0), 0), diarios: totals };
+      }
+    }
+    return null;
+  }
+
+  window.updateDefectosPreview = function() {
+    const producto = gv('def-producto') || 'tabicon';
+    const piezas = parseFloat(gv('def-cant')) || 0;
+    const motivo = gv('def-motivo') || 'Sin detalle';
+    document.getElementById('def-preview').innerHTML =
+      'Descuenta del inventario: <b>' + fmt(piezas) + ' piezas</b> de ' + productLabel(producto).toLowerCase() + '<br>Motivo: <b>' + motivo + '</b>';
+  };
+
   window.updateProdPreview = function() {
     const producto = gv('prod-producto') || 'tabicon';
     const bultos = parseFloat(gv('prod-bultos')) || 0;
@@ -357,6 +414,27 @@
     });
     saveInv();
     toast('✓ ' + fmt(piezas) + ' piezas de ' + productLabel(producto).toLowerCase() + ' registradas.');
+  };
+
+  window.registrarDefecto = function() {
+    const producto = gv('def-producto') || 'tabicon';
+    const piezas = parseFloat(gv('def-cant')) || 0;
+    const fecha = gv('def-fecha');
+    const motivo = (gv('def-motivo') || '').trim() || 'Sin detalle';
+    if (piezas <= 0) { toast('Ingresa una cantidad válida de defectos.'); return; }
+    if (!fecha) { toast('Selecciona la fecha del defecto.'); return; }
+    if (inv[producto] < piezas) { toast('No puedes descontar más piezas de las disponibles en ' + productLabel(producto).toLowerCase() + '.'); return; }
+    inv[producto] -= piezas;
+    addHist('Defecto de producción', productLabel(producto), fmt(piezas) + ' piezas defectuosas', 'Defecto', motivo, {
+      fecha,
+      editable: true,
+      effect: { [producto]: -piezas },
+      raw: { producto, piezas, motivo }
+    });
+    saveInv();
+    sv('def-cant', 0); sv('def-motivo', '');
+    updateDefectosPreview();
+    toast('✓ Defectos registrados y descontados del inventario.');
   };
 
   // ── VENTA ────────────────────────────────────────────────────
@@ -640,6 +718,25 @@
         raw: { producto, cant, precio, cliente: raw.cliente || '', obra: raw.obra || 'General', nota: raw.nota || '' }
       };
     }
+    if (original.mov === 'Defecto') {
+      const producto = normalizeProductoKey(raw.producto || 'tabicon');
+      const piezas = Number(raw.piezas ?? raw.cant) || 0;
+      const motivo = String(raw.motivo || '').trim() || 'Sin detalle';
+      if (piezas <= 0) return null;
+      return {
+        ...original,
+        fecha: fromInputDate(raw.fecha || original.fechaISO || toInputDate(original.fecha)),
+        fechaISO: raw.fecha || original.fechaISO || toInputDate(original.fecha),
+        hora: original.hora || currentHora(),
+        tipo: 'Defecto de producción' + (motivo ? ' — ' + motivo : ''),
+        insumo: productLabel(producto),
+        cantidad: fmt(piezas) + ' piezas defectuosas',
+        mov: 'Defecto',
+        editable: true,
+        effect: { [producto]: -piezas },
+        raw: { producto, piezas, motivo }
+      };
+    }
     return null;
   }
 
@@ -708,6 +805,18 @@
       const nota = prompt('Nota (opcional):', raw.nota || '');
       if (nota === null) return;
       raw.nota = nota;
+    }
+
+    if (item.mov === 'Defecto') {
+      const producto = prompt('Producto: tabicon o tabiqueChiquito', raw.producto || 'tabicon');
+      if (producto === null) return;
+      raw.producto = String(producto).trim();
+      const piezas = prompt('Piezas defectuosas:', raw.piezas ?? raw.cant ?? '');
+      if (piezas === null) return;
+      raw.piezas = Number(piezas);
+      const motivo = prompt('Motivo del defecto:', raw.motivo || '');
+      if (motivo === null) return;
+      raw.motivo = motivo;
     }
 
     const updated = buildHistFromRaw(raw, item);
@@ -850,7 +959,7 @@
   }
 
   function histLabel(mov = '') {
-    const map = { all: 'Todos', Entrada: 'Entradas', Producción: 'Producción', Venta: 'Ventas', Nota: 'Notas', Abono: 'Abonos' };
+    const map = { all: 'Todos', Entrada: 'Entradas', Producción: 'Producción', Defecto: 'Defectos', Venta: 'Ventas', Nota: 'Notas', Abono: 'Abonos' };
     return map[mov] || mov;
   }
 
@@ -871,8 +980,8 @@
     if (!lista) return;
     const allItems = getHistEntries().sort((a, b) => histDateValue(b) - histDateValue(a));
     if (!allItems.length) { lista.innerHTML = '<div class="empty">Sin movimientos aún.</div>'; return; }
-    const colors = { Entrada: 'badge-in', Producción: 'badge-prod', Venta: 'badge-out', Nota: 'badge-nota', Abono: 'badge-abono' };
-    const groups = ['Entrada', 'Producción', 'Venta', 'Nota', 'Abono'];
+    const colors = { Entrada: 'badge-in', Producción: 'badge-prod', Defecto: 'badge-defecto', Venta: 'badge-out', Nota: 'badge-nota', Abono: 'badge-abono' };
+    const groups = ['Entrada', 'Producción', 'Defecto', 'Venta', 'Nota', 'Abono'];
     const filter = window.histFilter || 'all';
     const useGroups = filter === 'all' ? groups : [filter];
 
@@ -1153,6 +1262,7 @@
   .badge-in { background: var(--accent-light); color: var(--accent-dark); }
   .badge-out { background: var(--red-light); color: var(--red); }
   .badge-prod { background: var(--blue-light); color: var(--blue); }
+  .badge-defecto { background: #fff0f0; color: #b42318; }
   .badge-nota { background: #fff3e0; color: #7c3600; }
   .badge-abono { background: #f3e5f5; color: #6a1b9a; }
   .badge-pendiente { background: #fff3e0; color: #7c3600; }
@@ -1338,6 +1448,35 @@
         <button class="btn btn-primary" onclick="registrarProduccion()">Registrar producción</button>
       </div>
     </div>
+
+    <div class="form-box">
+      <div class="form-title">Registrar defectos de producción</div>
+      <div class="form-grid">
+        <div class="form-group">
+          <label>Producto</label>
+          <select id="def-producto" onchange="updateDefectosPreview()">
+            <option value="tabicon">Tabicón</option>
+            <option value="tabiqueChiquito">Tabique chiquito</option>
+          </select>
+        </div>
+        <div class="form-group">
+          <label>Piezas defectuosas</label>
+          <input type="number" id="def-cant" min="1" value="0" oninput="updateDefectosPreview()">
+        </div>
+        <div class="form-group full">
+          <label>Motivo</label>
+          <input type="text" id="def-motivo" placeholder="Ej. quebrados, mal moldeados, húmedos" oninput="updateDefectosPreview()">
+        </div>
+        <div class="form-group full">
+          <label>Fecha del defecto</label>
+          <input type="date" id="def-fecha">
+        </div>
+      </div>
+      <div class="preview" id="def-preview">—</div>
+      <div class="btn-row">
+        <button class="btn btn-danger" onclick="registrarDefecto()">Descontar defectos</button>
+      </div>
+    </div>
   </div>
 
   <!-- VENTA -->
@@ -1439,6 +1578,7 @@
       <button class="hist-filter-btn active" data-filter="all" onclick="showHistFilter('all', this)">Todos</button>
       <button class="hist-filter-btn" data-filter="Entrada" onclick="showHistFilter('Entrada', this)">Entradas</button>
       <button class="hist-filter-btn" data-filter="Producción" onclick="showHistFilter('Producción', this)">Producción</button>
+      <button class="hist-filter-btn" data-filter="Defecto" onclick="showHistFilter('Defecto', this)">Defectos</button>
       <button class="hist-filter-btn" data-filter="Venta" onclick="showHistFilter('Venta', this)">Ventas</button>
       <button class="hist-filter-btn" data-filter="Nota" onclick="showHistFilter('Nota', this)">Notas</button>
       <button class="hist-filter-btn" data-filter="Abono" onclick="showHistFilter('Abono', this)">Abonos</button>
