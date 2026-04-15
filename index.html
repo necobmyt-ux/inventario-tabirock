@@ -1,0 +1,1647 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="default">
+<meta name="apple-mobile-web-app-title" content="Tabicón">
+<meta name="theme-color" content="#1a1a2e">
+<title>Inventario Tabiques</title>
+
+<!-- ============================================================
+     FIREBASE CONFIG — PEGA AQUÍ TUS CLAVES DE FIREBASE
+     1. Ve a console.firebase.google.com
+     2. Crea proyecto → Agregar app web
+     3. Copia el objeto firebaseConfig y reemplaza el de abajo
+     ============================================================ -->
+<script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
+<script type="module">
+  import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-app.js";
+  import { getDatabase, ref, set, push, onValue, update, remove } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-database.js";
+
+  // ⬇️ REEMPLAZA ESTO CON TUS DATOS DE FIREBASE
+  const firebaseConfig = {
+    apiKey: "AIzaSyDvSa_4Y2WkrLEjWWwj04_sp5ZsLeII6Us",
+    authDomain: "inventario-tabirock.firebaseapp.com",
+    databaseURL: "https://inventario-tabirock-default-rtdb.firebaseio.com",
+    projectId: "inventario-tabirock",
+    storageBucket: "inventario-tabirock.firebasestorage.app",
+    messagingSenderId: "673540708541",
+    appId: "1:673540708541:web:47387eaef6dcf7d25fbfd4"
+  };
+
+  const app = initializeApp(firebaseConfig);
+  const db = getDatabase(app);
+
+  // Estado global
+  let inv = { tabicon: 0, tabiqueChiquito: 0, cemento: 0, balastre: 0, confetillo: 0 };
+  let historial = {};
+  let notas = {};
+  let entradaCategoria = 'cemento';
+  let notasSearch = '';
+  const SECURITY_PIN = 'Tabirock';
+
+  // ── Inventario ──────────────────────────────────────────────
+  onValue(ref(db, 'inventario'), snap => {
+    if (snap.val()) { inv = cloneInvState(snap.val()); renderDashboard(); renderStorage(); }
+  });
+
+  onValue(ref(db, 'historial'), snap => {
+    historial = snap.val() || {};
+    renderHistorial();
+    renderStorage();
+  });
+
+  onValue(ref(db, 'notas'), snap => {
+    notas = snap.val() || {};
+    renderNotas();
+    renderDashboard();
+    renderStorage();
+  });
+
+  function saveInv() { set(ref(db, 'inventario'), inv); }
+
+  function toInputDate(v) {
+    if (!v) return '';
+    if (/^\d{4}-\d{2}-\d{2}$/.test(v)) return v;
+    const parts = String(v).split('/');
+    if (parts.length !== 3) return '';
+    const [dd, mm, yy] = parts;
+    const year = yy.length === 2 ? '20' + yy : yy;
+    return `${year}-${mm.padStart(2, '0')}-${dd.padStart(2, '0')}`;
+  }
+
+  function fromInputDate(v) {
+    if (!v) return '';
+    const [y, m, d] = v.split('-');
+    return `${d}/${m}/${String(y).slice(-2)}`;
+  }
+
+  function currentHora() {
+    return new Date().toLocaleTimeString('es-MX', { hour: '2-digit', minute: '2-digit' });
+  }
+
+  function cloneInvState(base = inv) {
+    return {
+      tabicon: Number(base.tabicon ?? base.tabicones) || 0,
+      tabiqueChiquito: Number(base.tabiqueChiquito) || 0,
+      cemento: Number(base.cemento) || 0,
+      balastre: Number(base.balastre) || 0,
+      confetillo: Number(base.confetillo) || 0
+    };
+  }
+
+  function normalizeEffect(effect = {}) {
+    return {
+      tabicon: Number(effect.tabicon ?? effect.tabicones) || 0,
+      tabiqueChiquito: Number(effect.tabiqueChiquito) || 0,
+      cemento: Number(effect.cemento) || 0,
+      balastre: Number(effect.balastre) || 0,
+      confetillo: Number(effect.confetillo) || 0
+    };
+  }
+
+  function applyEffect(base, effect = {}) {
+    const next = cloneInvState(base);
+    const ef = normalizeEffect(effect);
+    next.tabicon += ef.tabicon;
+    next.tabiqueChiquito += ef.tabiqueChiquito;
+    next.cemento += ef.cemento;
+    next.balastre += ef.balastre;
+    next.confetillo += ef.confetillo;
+    return next;
+  }
+
+  function canApplyEffect(base, effect = {}) {
+    const next = applyEffect(base, effect);
+    return next.tabicon >= 0 && next.tabiqueChiquito >= 0 && next.cemento >= 0 && next.balastre >= 0 && next.confetillo >= 0;
+  }
+
+  function saveInvState(next) {
+    inv = cloneInvState(next);
+    saveInv();
+    renderDashboard();
+  }
+
+  function addHist(tipo, insumo, cantidad, mov, extra, meta = {}) {
+    const fechaInput = meta.fecha || '';
+    const fecha = fechaInput ? fromInputDate(fechaInput) : new Date().toLocaleDateString('es-MX', { day: '2-digit', month: '2-digit', year: '2-digit' });
+    const hora = meta.hora || currentHora();
+    const payload = {
+      fecha,
+      fechaISO: fechaInput || toInputDate(fecha),
+      hora,
+      tipo: extra ? tipo + ' — ' + extra : tipo,
+      insumo,
+      cantidad,
+      mov,
+      editable: !!meta.editable,
+      effect: normalizeEffect(meta.effect),
+      raw: meta.raw || null,
+      createdAt: Date.now()
+    };
+    push(ref(db, 'historial'), payload);
+  }
+
+  function getHistEntries() {
+    return Object.entries(historial).map(([id, h]) => ({ id, ...h }));
+  }
+
+  function sortHistEntries(entries = []) {
+    return [...entries].sort((a, b) => {
+      const da = new Date((a.fechaISO || '1970-01-01') + 'T' + (a.hora || '00:00'));
+      const db = new Date((b.fechaISO || '1970-01-01') + 'T' + (b.hora || '00:00'));
+      return da - db;
+    });
+  }
+
+  function rebuildInventoryFromHist(entries) {
+    let next = { tabicon: 0, tabiqueChiquito: 0, cemento: 0, balastre: 0, confetillo: 0 };
+    for (const item of sortHistEntries(entries)) {
+      if (!canApplyEffect(next, item.effect || {})) return null;
+      next = applyEffect(next, item.effect || {});
+    }
+    return next;
+  }
+
+  function refreshDateInputs() {
+    const today = new Date().toISOString().split('T')[0];
+    const inFecha = document.getElementById('in-fecha');
+    const prodFecha = document.getElementById('prod-fecha');
+    const defFecha = document.getElementById('def-fecha');
+    if (inFecha && !inFecha.value) inFecha.value = today;
+    if (prodFecha && !prodFecha.value) prodFecha.value = today;
+    if (defFecha && !defFecha.value) defFecha.value = today;
+  }
+
+
+  function estimateBytes(obj) {
+    try { return new Blob([JSON.stringify(obj || {})]).size; }
+    catch (e) { return JSON.stringify(obj || {}).length; }
+  }
+
+  function formatBytes(bytes = 0) {
+    const units = ['B', 'KB', 'MB', 'GB'];
+    let size = Number(bytes) || 0;
+    let idx = 0;
+    while (size >= 1024 && idx < units.length - 1) { size /= 1024; idx++; }
+    const dec = idx === 0 ? 0 : 2;
+    return size.toLocaleString('es-MX', { minimumFractionDigits: 0, maximumFractionDigits: dec }) + ' ' + units[idx];
+  }
+
+  function renderStorage() {
+    const used = estimateBytes({ inventario: inv, historial, notas });
+    const sparkLimit = 1024 * 1024 * 1024;
+    const remaining = Math.max(0, sparkLimit - used);
+    setVal('storage-used', formatBytes(used));
+    setVal('storage-remaining', formatBytes(remaining));
+  }
+
+  // ── DASHBOARD ───────────────────────────────────────────────
+  function renderDashboard() {
+        setVal('val-tabicon', fmt(inv.tabicon));
+    setVal('val-tabique-chiquito', fmt(inv.tabiqueChiquito));
+    setVal('val-cemento', fmt(inv.cemento));
+    setVal('val-balastre', fmt(inv.balastre, 2));
+    setVal('val-confetillo', fmt(inv.confetillo, 2));
+        setVal('cap-cemento', fmt(inv.cemento * 125));
+    setVal('cap-balastre', fmt(Math.floor(inv.balastre / 0.36)));
+    setVal('cap-confetillo', fmt(Math.floor(inv.confetillo / 0.27)));
+
+    // Alertas
+    const hoy = new Date(); hoy.setHours(0,0,0,0);
+    let alertas = '';
+    if (inv.cemento < 10 && inv.cemento > 0) alertas += alerta('Cemento bajo: quedan ' + fmt(inv.cemento) + ' bultos.');
+    if (inv.balastre < 5) alertas += alerta('Balastre bajo: ' + fmt(inv.balastre, 2) + ' m³ disponibles.');
+    if (inv.confetillo < 5) alertas += alerta('Confetillo bajo: ' + fmt(inv.confetillo, 2) + ' m³ disponibles.');
+
+    // Notas vencidas
+    Object.entries(notas).forEach(([id, raw]) => {
+      const n = normalizeNota(id, raw);
+      if (n.estado !== 'pagada' && n.fechaLimite) {
+        const iso = toInputDate(n.fechaLimite);
+        const fl = new Date((iso || '1970-01-01') + 'T00:00:00');
+        if (fl < hoy) alertas += alerta('Nota vencida: ' + (n.cliente || 'Cliente') + ' — $' + fmt(saldo(n), 2));
+      }
+    });
+    const alertaDefectos = hasThreeConsecutiveHighDefectDays(70);
+    if (alertaDefectos) {
+      const etiquetas = alertaDefectos.fechas.map(f => fromInputDate(f) + ': ' + fmt(alertaDefectos.diarios[f]) ).join(' · ');
+      alertas += alerta('Defectos altos 3 días seguidos: ' + etiquetas + '. Revisa producción.');
+    }
+    document.getElementById('alertas').innerHTML = alertas;
+
+    // Resumen notas
+    let porCobrar = 0, totalNotas = 0;
+    Object.values(notas).map((n, idx) => normalizeNota(String(idx), n)).forEach(n => {
+      if (n.estado !== 'pagada') { porCobrar++; totalNotas += saldo(n); }
+    });
+    setVal('val-notas-pendientes', porCobrar);
+    setVal('val-monto-pendiente', '$' + fmt(totalNotas, 2));
+  }
+
+  function alerta(msg) {
+    return '<div class="alerta">⚠ ' + msg + '</div>';
+  }
+
+  // ── ENTRADA ─────────────────────────────────────────────────
+  window.setEntradaCategoria = function(tipo = 'cemento', btn) {
+    entradaCategoria = tipo;
+    sv('in-tipo', tipo);
+    document.querySelectorAll('.entrada-cat-btn').forEach(b => b.classList.remove('active'));
+    if (btn) btn.classList.add('active');
+    else {
+      const autoBtn = document.querySelector(`.entrada-cat-btn[data-tipo="${tipo}"]`);
+      if (autoBtn) autoBtn.classList.add('active');
+    }
+    updateEntradaPreview();
+  };
+
+  window.updateEntradaPreview = function() {
+    const tipo = gv('in-tipo') || entradaCategoria || 'cemento';
+    const cant = parseFloat(gv('in-cant')) || 0;
+    const precioTon = parseFloat(gv('in-precio-ton')) || 0;
+    const lbl = document.getElementById('in-cant-label');
+    const precioWrap = document.getElementById('in-precio-ton-wrap');
+    let prev = '';
+    if (tipo === 'cemento') {
+      lbl.textContent = 'Cantidad (bultos)';
+      if (precioWrap) precioWrap.style.display = 'flex';
+      const toneladas = cant * 0.05;
+      const total = toneladas * precioTon;
+      const costoBulto = precioTon > 0 ? precioTon / 20 : 0;
+      prev = '<b>' + fmt(cant) + '</b> bultos = <b>' + fmt(toneladas, 2) + ' t</b> · costo por bulto: <b>$' + fmt(costoBulto, 2) + '</b> · total: <b>$' + fmt(total, 2) + '</b><br>Est. producción: <b>' + fmt(cant * 125) + '</b> piezas | balastre: <b>' + fmt(cant * 0.36, 3) + ' m³</b> · confetillo: <b>' + fmt(cant * 0.27, 3) + ' m³</b>';
+    } else if (tipo === 'balastre') {
+      lbl.textContent = 'Cantidad real (m³)';
+      if (precioWrap) precioWrap.style.display = 'none';
+      prev = '<b>' + fmt(cant, 2) + '</b> m³ de balastre → alcanza para <b>' + fmt(Math.floor(cant / 0.36)) + '</b> bultos';
+    } else {
+      lbl.textContent = 'Cantidad real (m³)';
+      if (precioWrap) precioWrap.style.display = 'none';
+      prev = '<b>' + fmt(cant, 2) + '</b> m³ de confetillo → alcanza para <b>' + fmt(Math.floor(cant / 0.27)) + '</b> bultos';
+    }
+    document.getElementById('entrada-preview').innerHTML = prev;
+  };
+
+  window.registrarEntrada = function() {
+    const tipo = gv('in-tipo') || entradaCategoria || 'cemento';
+    const cant = parseFloat(gv('in-cant')) || 0;
+    const precioTon = parseFloat(gv('in-precio-ton')) || 0;
+    if (cant <= 0) { toast('Ingresa una cantidad válida.'); return; }
+    let insumo = '', cantidad = '';
+    let effect = {};
+    const proveedor = gv('in-proveedor') || '';
+    const nota = gv('in-nota') || '';
+    const fecha = gv('in-fecha') || '';
+    let extra = [];
+    if (tipo === 'cemento') {
+      effect = { cemento: cant };
+      inv.cemento += cant;
+      insumo = 'Cemento';
+      const toneladas = cant * 0.05;
+      const total = toneladas * precioTon;
+      const costoBulto = precioTon > 0 ? precioTon / 20 : 0;
+      cantidad = fmt(cant) + ' bultos';
+      if (precioTon > 0) {
+        cantidad += ' | $' + fmt(total, 2);
+        extra.push('$' + fmt(precioTon, 2) + '/ton');
+        extra.push('$' + fmt(costoBulto, 2) + '/bulto');
+      }
+    } else if (tipo === 'balastre') {
+      effect = { balastre: cant };
+      inv.balastre += cant;
+      insumo = 'Balastre';
+      cantidad = fmt(cant, 2) + ' m³';
+    } else {
+      effect = { confetillo: cant };
+      inv.confetillo += cant;
+      insumo = 'Confetillo';
+      cantidad = fmt(cant, 2) + ' m³';
+    }
+    if (proveedor) extra.push(proveedor);
+    if (nota) extra.push(nota);
+    addHist('Entrada', insumo, cantidad, 'Entrada', extra.join(' · '), {
+      fecha,
+      editable: true,
+      effect,
+      raw: { tipo, cant, m3: (tipo === 'cemento' ? null : cant), proveedor, nota, precioTon, fecha }
+    });
+    saveInv();
+    sv('in-cant', 1); sv('in-proveedor', ''); sv('in-nota', ''); sv('in-precio-ton', ''); sv('in-fecha', '');
+    refreshDateInputs();
+    updateEntradaPreview();
+    toast('✓ Entrada registrada.');
+  };
+
+  // ── PRODUCCIÓN ───────────────────────────────────────────────
+  function productLabel(key) {
+    return key === 'tabiqueChiquito' ? 'Tabique chiquito' : 'Tabicón';
+  }
+
+  function defectosPorDia() {
+    const totals = {};
+    getHistEntries().forEach(item => {
+      if (item.mov !== 'Defecto') return;
+      const fecha = item.fechaISO || toInputDate(item.fecha);
+      const piezas = Number((item.raw && (item.raw.piezas ?? item.raw.cant)) || 0) || 0;
+      if (!fecha || piezas <= 0) return;
+      totals[fecha] = (totals[fecha] || 0) + piezas;
+    });
+    return totals;
+  }
+
+  function hasThreeConsecutiveHighDefectDays(limit = 70) {
+    const totals = defectosPorDia();
+    const fechas = Object.keys(totals).sort();
+    if (fechas.length < 3) return null;
+    let streak = [];
+    for (const fecha of fechas) {
+      if ((totals[fecha] || 0) <= limit) {
+        streak = [];
+        continue;
+      }
+      if (!streak.length) {
+        streak = [fecha];
+        continue;
+      }
+      const prev = new Date(streak[streak.length - 1] + 'T00:00:00');
+      const curr = new Date(fecha + 'T00:00:00');
+      const diff = Math.round((curr - prev) / 86400000);
+      if (diff === 1) {
+        streak.push(fecha);
+      } else {
+        streak = [fecha];
+      }
+      if (streak.length >= 3) {
+        const ultimas = streak.slice(-3);
+        return { fechas: ultimas, total: ultimas.reduce((s, f) => s + (totals[f] || 0), 0), diarios: totals };
+      }
+    }
+    return null;
+  }
+
+  window.updateDefectosPreview = function() {
+    const producto = gv('def-producto') || 'tabicon';
+    const piezas = parseFloat(gv('def-cant')) || 0;
+    const motivo = gv('def-motivo') || 'Sin detalle';
+    document.getElementById('def-preview').innerHTML =
+      'Descuenta del inventario: <b>' + fmt(piezas) + ' piezas</b> de ' + productLabel(producto).toLowerCase() + '<br>Motivo: <b>' + motivo + '</b>';
+  };
+
+  window.updateProdPreview = function() {
+    const producto = gv('prod-producto') || 'tabicon';
+    const bultos = parseFloat(gv('prod-bultos')) || 0;
+    const piezasPorBulto = parseFloat(gv('prod-rendimiento')) || 125;
+    const piezas = Math.round(bultos * piezasPorBulto);
+    sv('prod-piezas', piezas > 0 ? piezas : 0);
+    document.getElementById('prod-preview').innerHTML =
+      'Producto: <b>' + productLabel(producto) + '</b><br>Descuenta: <b>' + fmt(bultos) + ' bultos</b> cemento · <b>' + fmt(bultos * 0.36, 3) + ' m³</b> balastre · <b>' + fmt(bultos * 0.27, 3) + ' m³</b> confetillo<br>Agrega: <b>' + fmt(piezas) + ' piezas</b> · Rendimiento: <b>' + fmt(piezasPorBulto, 2) + '/bulto</b>';
+  };
+
+  window.registrarProduccion = function() {
+    const producto = gv('prod-producto') || 'tabicon';
+    const bultos = parseFloat(gv('prod-bultos')) || 0;
+    const piezasPorBulto = parseFloat(gv('prod-rendimiento')) || 125;
+    const piezas = Math.round(bultos * piezasPorBulto);
+    if (bultos <= 0 || piezas <= 0) { toast('Ingresa valores válidos.'); return; }
+    if (inv.cemento < bultos) { toast('Cemento insuficiente: ' + fmt(inv.cemento) + ' bultos disponibles.'); return; }
+    if (inv.balastre < bultos * 0.36) { toast('Balastre insuficiente: ' + fmt(inv.balastre, 2) + ' m³ disponibles.'); return; }
+    if (inv.confetillo < bultos * 0.27) { toast('Confetillo insuficiente: ' + fmt(inv.confetillo, 2) + ' m³ disponibles.'); return; }
+    inv.cemento -= bultos; inv.balastre -= bultos * 0.36; inv.confetillo -= bultos * 0.27; inv[producto] += piezas;
+    const effect = { cemento: -bultos, balastre: -(bultos * 0.36), confetillo: -(bultos * 0.27), [producto]: piezas };
+    addHist('Producción', productLabel(producto), fmt(piezas) + ' piezas (' + fmt(bultos) + ' bultos)', 'Producción', '', {
+      fecha: gv('prod-fecha'),
+      editable: true,
+      effect,
+      raw: { producto, bultos, piezas, piezasPorBulto }
+    });
+    saveInv();
+    toast('✓ ' + fmt(piezas) + ' piezas de ' + productLabel(producto).toLowerCase() + ' registradas.');
+  };
+
+  window.registrarDefecto = function() {
+    const producto = gv('def-producto') || 'tabicon';
+    const piezas = parseFloat(gv('def-cant')) || 0;
+    const fecha = gv('def-fecha');
+    const motivo = (gv('def-motivo') || '').trim() || 'Sin detalle';
+    if (piezas <= 0) { toast('Ingresa una cantidad válida de defectos.'); return; }
+    if (!fecha) { toast('Selecciona la fecha del defecto.'); return; }
+    if (inv[producto] < piezas) { toast('No puedes descontar más piezas de las disponibles en ' + productLabel(producto).toLowerCase() + '.'); return; }
+    inv[producto] -= piezas;
+    addHist('Defecto de producción', productLabel(producto), fmt(piezas) + ' piezas defectuosas', 'Defecto', motivo, {
+      fecha,
+      editable: true,
+      effect: { [producto]: -piezas },
+      raw: { producto, piezas, motivo }
+    });
+    saveInv();
+    sv('def-cant', 0); sv('def-motivo', '');
+    updateDefectosPreview();
+    toast('✓ Defectos registrados y descontados del inventario.');
+  };
+
+  // ── VENTA ────────────────────────────────────────────────────
+  window.updateVentaPreview = function() {
+    const producto = gv('venta-producto') || 'tabicon';
+    const cant = parseFloat(gv('venta-cant')) || 0, precio = parseFloat(gv('venta-precio')) || 0;
+    document.getElementById('venta-preview').innerHTML =
+      '<b>' + fmt(cant) + '</b> piezas de ' + productLabel(producto).toLowerCase() + ' × $<b>' + fmt(precio, 2) + '</b> = <b>$' + fmt(cant * precio, 2) + '</b>';
+  };
+
+  function crearNotaDesdeVenta({ cliente = '', obra = '', producto = 'tabicon', cant = 0, precio = 0, nota = '' } = {}) {
+    const total = (Number(cant) || 0) * (Number(precio) || 0);
+    const fechaHoy = new Date().toLocaleDateString('es-MX', { day: '2-digit', month: '2-digit', year: '2-digit' });
+    push(ref(db, 'notas'), {
+      cliente: cliente || 'Cliente',
+      obra: obra || 'General',
+      producto,
+      cant: Number(cant) || 0,
+      precio: Number(precio) || 0,
+      total,
+      fecha: fechaHoy,
+      fechaLimite: '',
+      abonos: [],
+      estado: total > 0 ? 'pendiente' : 'pagada',
+      origen: 'venta',
+      nota: nota || ''
+    });
+  }
+
+  window.registrarVenta = function() {
+    const producto = gv('venta-producto') || 'tabicon';
+    const cant = parseFloat(gv('venta-cant')) || 0, precio = parseFloat(gv('venta-precio')) || 0;
+    if (cant <= 0) { toast('Ingresa una cantidad válida.'); return; }
+    if (inv[producto] < cant) { toast('Solo hay ' + fmt(inv[producto]) + ' piezas disponibles de ' + productLabel(producto).toLowerCase() + '.'); return; }
+    inv[producto] -= cant;
+    const total = cant * precio;
+    addHist('Venta', (gv('venta-cliente') || 'Cliente') + ' · ' + productLabel(producto), fmt(cant) + ' piezas | $' + fmt(total, 2), 'Venta', gv('venta-nota'), {
+      editable: true,
+      effect: { [producto]: -cant },
+      raw: { producto, cant, precio, cliente: gv('venta-cliente') || '', obra: gv('venta-obra') || 'General', nota: gv('venta-nota') || '' }
+    });
+    crearNotaDesdeVenta({ producto, cant, precio, cliente: gv('venta-cliente') || '', obra: gv('venta-obra') || 'General', nota: gv('venta-nota') || '' });
+    saveInv();
+    sv('venta-cant', 100); sv('venta-precio', 0); sv('venta-cliente', ''); sv('venta-obra', ''); sv('venta-nota', '');
+    updateVentaPreview();
+    toast('✓ Venta registrada y nota por cobrar generada.');
+  };
+
+  // ── NOTAS ────────────────────────────────────────────────────
+  window.updateNotaPreview = function() {
+    const producto = gv('nota-producto') || 'tabicon';
+    const obra = (gv('nota-obra') || 'General').trim() || 'General';
+    const cant = parseFloat(gv('nota-cant')) || 0, precio = parseFloat(gv('nota-precio')) || 0;
+    document.getElementById('nota-preview').innerHTML =
+      '<b>' + fmt(cant) + '</b> piezas de ' + productLabel(producto).toLowerCase() + ' × $<b>' + fmt(precio, 2) + '</b> = <b>$' + fmt(cant * precio, 2) + '</b> total';
+  };
+
+  window.registrarNota = function() {
+    const cliente = gv('nota-cliente').trim();
+    const producto = gv('nota-producto') || 'tabicon';
+    const obra = (gv('nota-obra') || 'General').trim() || 'General';
+    const cant = parseFloat(gv('nota-cant')) || 0;
+    const precio = parseFloat(gv('nota-precio')) || 0;
+    const fechaLimite = gv('nota-fecha');
+    if (!cliente) { toast('Ingresa el nombre del cliente.'); return; }
+    if (cant <= 0 || precio <= 0) { toast('Ingresa cantidad y precio válidos.'); return; }
+    if (!fechaLimite) { toast('Ingresa la fecha límite de pago.'); return; }
+    const total = cant * precio;
+    const nueva = { cliente, obra, producto, cant, precio, total, fechaLimite, abonos: [], estado: 'pendiente', fecha: new Date().toLocaleDateString('es-MX', { day: '2-digit', month: '2-digit', year: '2-digit' }), origen: 'manual' };
+    push(ref(db, 'notas'), nueva);
+    addHist('Nota por cobrar', cliente + ' · ' + productLabel(producto), fmt(cant) + ' piezas | $' + fmt(total, 2), 'Nota', 'Sin mover inventario', {
+      editable: false,
+      effect: {}
+    });
+    sv('nota-cliente', ''); sv('nota-obra', ''); sv('nota-cant', 0); sv('nota-precio', 0); sv('nota-fecha', '');
+    updateNotaPreview();
+    toast('✓ Nota registrada sin descontar inventario.');
+  };
+
+  window.abonar = function(id) {
+    if (!requireSecurityPin('registrar un abono')) return;
+    const nota = normalizeNota(id, notas[id] || {});
+    const sal = saldo(nota);
+    if (sal <= 0) { toast('Esa nota ya no tiene saldo pendiente.'); return; }
+    const monto = parseFloat(prompt('¿Cuánto abona el cliente?'));
+    if (!monto || monto <= 0) return;
+    if (monto > sal) { toast('El abono supera el saldo pendiente ($' + fmt(sal, 2) + ').'); return; }
+    const abonos = [...nota.abonos];
+    abonos.push({ monto, fecha: new Date().toLocaleDateString('es-MX', { day: '2-digit', month: '2-digit', year: '2-digit' }) });
+    const nuevoSaldo = sal - monto;
+    const estado = nuevoSaldo <= 0 ? 'pagada' : 'pendiente';
+    update(ref(db, 'notas/' + id), { abonos, estado });
+    addHist('Abono', nota.cliente, '$' + fmt(monto, 2), 'Abono');
+    toast('✓ Abono de $' + fmt(monto, 2) + ' registrado.');
+  };
+
+  window.editarAbono = function(id, index) {
+    if (!requireSecurityPin('editar un abono')) return;
+    const nota = normalizeNota(id, notas[id] || {});
+    const actual = nota.abonos[index];
+    if (!actual) return;
+    const nuevoMonto = parseFloat(prompt('Editar monto del abono', Number(actual.monto) || 0));
+    if (!nuevoMonto || nuevoMonto <= 0) return;
+    const abonos = [...nota.abonos];
+    abonos[index] = { ...actual, monto: nuevoMonto };
+    const nuevoSaldo = Math.max(0, nota.total - abonos.reduce((s, a) => s + (Number(a.monto) || 0), 0));
+    const estado = nuevoSaldo <= 0 ? 'pagada' : 'pendiente';
+    update(ref(db, 'notas/' + id), { abonos, estado });
+    toast('✓ Abono actualizado.');
+  };
+
+  window.eliminarAbono = function(id, index) {
+    if (!requireSecurityPin('borrar un abono')) return;
+    const nota = normalizeNota(id, notas[id] || {});
+    if (!nota.abonos[index]) return;
+    if (!confirm('¿Borrar este abono?')) return;
+    const abonos = [...nota.abonos];
+    abonos.splice(index, 1);
+    const nuevoSaldo = Math.max(0, nota.total - abonos.reduce((s, a) => s + (Number(a.monto) || 0), 0));
+    const estado = nuevoSaldo <= 0 ? 'pagada' : 'pendiente';
+    update(ref(db, 'notas/' + id), { abonos, estado });
+    toast('✓ Abono eliminado.');
+  };
+
+  window.marcarPagada = function(id) {
+    if (!requireSecurityPin('marcar una nota como pagada')) return;
+    const nota = normalizeNota(id, notas[id] || {});
+    const sal = saldo(nota);
+    if (sal <= 0) { toast('Esa nota ya está pagada.'); return; }
+    const abonos = [...nota.abonos, { monto: sal, fecha: new Date().toLocaleDateString('es-MX', { day: '2-digit', month: '2-digit', year: '2-digit' }), autoCierre: true }];
+    update(ref(db, 'notas/' + id), { abonos, estado: 'pagada' });
+    addHist('Abono', nota.cliente, '$' + fmt(sal, 2), 'Abono', 'Pago total');
+    toast('✓ Se registró un abono por el saldo restante.');
+  };
+
+  window.eliminarNota = function(id) {
+    if (!requireSecurityPin('eliminar esta nota')) return;
+    if (confirm('¿Eliminar esta nota?')) { remove(ref(db, 'notas/' + id)); toast('Nota eliminada.'); }
+  };
+
+  function requireSecurityPin(action = 'realizar esta acción') {
+    const pin = prompt('Ingresa el PIN para ' + action + ':');
+    if (pin === null) return false;
+    if (pin !== SECURITY_PIN) {
+      toast('PIN incorrecto.');
+      return false;
+    }
+    return true;
+  }
+
+  function rebuildAndSaveInventory(nextEntries) {
+    const rebuilt = rebuildInventoryFromHist(nextEntries);
+    if (!rebuilt) {
+      toast('No se pudo recalcular el inventario con ese cambio.');
+      return false;
+    }
+    saveInvState(rebuilt);
+    return true;
+  }
+
+  function saldo(n) {
+    const abonado = (n.abonos || []).reduce((s, a) => s + (Number(a.monto) || 0), 0);
+    const total = Number(n?.total) || ((Number(n?.cant) || 0) * (Number(n?.precio) || 0));
+    return Math.max(0, total - abonado);
+  }
+
+  function normalizeNota(id, n = {}) {
+    const total = Number(n.total) || ((Number(n.cant) || 0) * (Number(n.precio) || 0));
+    const estadoReal = (n.estado === 'pagada' || saldo({ ...n, total }) <= 0) ? 'pagada' : 'pendiente';
+    return {
+      id,
+      ...n,
+      producto: normalizeProductoKey(n.producto),
+      obra: (n.obra || 'General').toString().trim() || 'General',
+      cant: Number(n.cant) || 0,
+      precio: Number(n.precio) || 0,
+      total,
+      abonos: Array.isArray(n.abonos) ? n.abonos : [],
+      fecha: n.fecha || '',
+      fechaLimite: n.fechaLimite || '',
+      estado: estadoReal
+    };
+  }
+
+  function noteTimeValue(n = {}) {
+    const iso = toInputDate(n.fechaLimite || n.fecha || '');
+    return new Date((iso || '1970-01-01') + 'T00:00:00').getTime();
+  }
+
+  function normalizeProductoKey(v) {
+    return String(v || '').trim().toLowerCase() === 'tabiquechiquito' || String(v || '').trim().toLowerCase() === 'tabique_chiquito' || String(v || '').trim().toLowerCase() === 'tabique chiquito'
+      ? 'tabiqueChiquito'
+      : 'tabicon';
+  }
+
+  function buildHistFromRaw(raw, original = {}) {
+    if (!raw || !original.mov) return null;
+    if (original.mov === 'Entrada') {
+      const cant = Number(raw.cant) || 0;
+      if (cant <= 0) return null;
+      let insumo = '', cantidad = '', effect = {};
+      raw.tipo = String(raw.tipo || '').trim().toLowerCase();
+      if (raw.tipo === 'cemento') { insumo = 'Cemento'; cantidad = fmt(cant) + ' bultos'; effect = { cemento: cant }; }
+      else if (raw.tipo === 'balastre') {
+        const m3 = Number(raw.m3 ?? cant);
+        if (m3 <= 0) return null;
+        insumo = 'Balastre'; cantidad = fmt(m3, 2) + ' m³'; effect = { balastre: m3 }; raw.m3 = m3; raw.cant = m3;
+      }
+      else if (raw.tipo === 'confetillo') {
+        const m3 = Number(raw.m3 ?? cant);
+        if (m3 <= 0) return null;
+        insumo = 'Confetillo'; cantidad = fmt(m3, 2) + ' m³'; effect = { confetillo: m3 }; raw.m3 = m3; raw.cant = m3;
+      }
+      else return null;
+      const categoriaProducto = normalizeProductoKey(raw.categoriaProducto || raw.producto || 'tabicon');
+      const precioTon = Number(raw.precioTon) || 0;
+      const proveedorTxt = raw.proveedor || '';
+      const notaTxt = raw.nota || '';
+      let extraParts = [productLabel(categoriaProducto)];
+      if (raw.tipo === 'cemento' && precioTon > 0) {
+        const toneladas = cant * 0.05;
+        const total = toneladas * precioTon;
+        const costoBulto = precioTon / 20;
+        cantidad += ' | $' + fmt(total, 2);
+        extraParts.push('$' + fmt(precioTon, 2) + '/ton');
+        extraParts.push('$' + fmt(costoBulto, 2) + '/bulto');
+      }
+      if (proveedorTxt) extraParts.push(proveedorTxt);
+      if (notaTxt) extraParts.push(notaTxt);
+      return {
+        ...original,
+        fecha: fromInputDate(raw.fecha || original.fechaISO || toInputDate(original.fecha)),
+        fechaISO: raw.fecha || original.fechaISO || toInputDate(original.fecha),
+        hora: original.hora || currentHora(),
+        tipo: 'Entrada — ' + extraParts.join(' · '),
+        insumo,
+        cantidad,
+        mov: 'Entrada',
+        editable: true,
+        effect,
+        raw: { tipo: raw.tipo, cant, m3: raw.tipo === 'cemento' ? null : Number(raw.m3 ?? cant), proveedor: proveedorTxt, nota: notaTxt, categoriaProducto, precioTon }
+      };
+    }
+    if (original.mov === 'Producción') {
+      const producto = normalizeProductoKey(raw.producto || 'tabicon');
+      const bultos = Number(raw.bultos) || 0;
+      const piezasPorBulto = Number(raw.piezasPorBulto) || (bultos > 0 ? ((Number(raw.piezas ?? raw.tabicones) || 0) / bultos) : 125) || 125;
+      const piezas = Math.round(bultos * piezasPorBulto);
+      if (bultos <= 0 || piezas <= 0) return null;
+      return {
+        ...original,
+        fecha: fromInputDate(raw.fecha || original.fechaISO || toInputDate(original.fecha)),
+        fechaISO: raw.fecha || original.fechaISO || toInputDate(original.fecha),
+        hora: original.hora || currentHora(),
+        tipo: 'Producción',
+        insumo: productLabel(producto),
+        cantidad: fmt(piezas) + ' piezas (' + fmt(bultos) + ' bultos · ' + fmt(piezasPorBulto, 2) + '/bulto)',
+        mov: 'Producción',
+        editable: true,
+        effect: { cemento: -bultos, balastre: -(bultos * 0.36), confetillo: -(bultos * 0.27), [producto]: piezas },
+        raw: { producto, bultos, piezas, piezasPorBulto }
+      };
+    }
+    if (original.mov === 'Venta') {
+      const producto = normalizeProductoKey(raw.producto || 'tabicon');
+      const cant = Number(raw.cant) || 0;
+      const precio = Number(raw.precio) || 0;
+      if (cant <= 0) return null;
+      const total = cant * precio;
+      return {
+        ...original,
+        fecha: fromInputDate(raw.fecha || original.fechaISO || toInputDate(original.fecha)),
+        fechaISO: raw.fecha || original.fechaISO || toInputDate(original.fecha),
+        hora: original.hora || currentHora(),
+        tipo: raw.cliente || raw.nota ? 'Venta — ' + (raw.nota || raw.cliente) : 'Venta',
+        insumo: (raw.cliente || 'Cliente') + ' · ' + productLabel(producto),
+        cantidad: fmt(cant) + ' piezas | $' + fmt(total, 2),
+        mov: 'Venta',
+        editable: true,
+        effect: { [producto]: -cant },
+        raw: { producto, cant, precio, cliente: raw.cliente || '', obra: raw.obra || 'General', nota: raw.nota || '' }
+      };
+    }
+    if (original.mov === 'Defecto') {
+      const producto = normalizeProductoKey(raw.producto || 'tabicon');
+      const piezas = Number(raw.piezas ?? raw.cant) || 0;
+      const motivo = String(raw.motivo || '').trim() || 'Sin detalle';
+      if (piezas <= 0) return null;
+      return {
+        ...original,
+        fecha: fromInputDate(raw.fecha || original.fechaISO || toInputDate(original.fecha)),
+        fechaISO: raw.fecha || original.fechaISO || toInputDate(original.fecha),
+        hora: original.hora || currentHora(),
+        tipo: 'Defecto de producción' + (motivo ? ' — ' + motivo : ''),
+        insumo: productLabel(producto),
+        cantidad: fmt(piezas) + ' piezas defectuosas',
+        mov: 'Defecto',
+        editable: true,
+        effect: { [producto]: -piezas },
+        raw: { producto, piezas, motivo }
+      };
+    }
+    return null;
+  }
+
+  window.editarMovimiento = function(id) {
+    if (!requireSecurityPin('editar este movimiento')) return;
+    const item = historial[id];
+    if (!item) return;
+    if (!item.editable || !item.raw) { toast('Este movimiento no se puede editar.'); return; }
+    const fecha = prompt('Fecha del movimiento (AAAA-MM-DD):', item.fechaISO || toInputDate(item.fecha));
+    if (fecha === null) return;
+    const raw = { ...(item.raw || {}), fecha };
+
+    if (item.mov === 'Entrada') {
+      const tipo = prompt('Tipo: cemento, balastre o confetillo', raw.tipo || 'cemento');
+      if (tipo === null) return;
+      raw.tipo = String(tipo).trim().toLowerCase();
+      const cant = prompt(raw.tipo === 'cemento' ? 'Cantidad de bultos:' : 'Cantidad real en m³:', raw.tipo === 'cemento' ? (raw.cant ?? '') : (raw.m3 ?? raw.cant ?? ''));
+      if (cant === null) return;
+      raw.cant = Number(cant);
+      if (raw.tipo !== 'cemento') raw.m3 = Number(cant);
+      const categoriaProducto = prompt('Categoría asociada: tabicon o tabiqueChiquito', raw.categoriaProducto || 'tabicon');
+      if (categoriaProducto === null) return;
+      raw.categoriaProducto = String(categoriaProducto).trim();
+      if (raw.tipo === 'cemento') {
+        const precioTon = prompt('Precio por tonelada (opcional):', raw.precioTon ?? '');
+        if (precioTon === null) return;
+        raw.precioTon = Number(precioTon) || 0;
+      }
+      const proveedor = prompt('Proveedor (opcional):', raw.proveedor || '');
+      if (proveedor === null) return;
+      raw.proveedor = proveedor;
+      const nota = prompt('Nota (opcional):', raw.nota || '');
+      if (nota === null) return;
+      raw.nota = nota;
+    }
+
+    if (item.mov === 'Producción') {
+      const bultos = prompt('Bultos de cemento usados:', raw.bultos ?? '');
+      if (bultos === null) return;
+      raw.bultos = Number(bultos);
+      const producto = prompt('Producto: tabicon o tabiqueChiquito', raw.producto || 'tabicon');
+      if (producto === null) return;
+      raw.producto = String(producto).trim();
+      const piezasPorBulto = prompt('Tabiques por bulto:', raw.piezasPorBulto ?? ((Number(raw.piezas ?? raw.tabicones) && Number(raw.bultos)) ? (Number(raw.piezas ?? raw.tabicones) / Number(raw.bultos)).toFixed(2) : '125'));
+      if (piezasPorBulto === null) return;
+      raw.piezasPorBulto = Number(piezasPorBulto) || 125;
+    }
+
+    if (item.mov === 'Venta') {
+      const producto = prompt('Producto: tabicon o tabiqueChiquito', raw.producto || 'tabicon');
+      if (producto === null) return;
+      raw.producto = String(producto).trim();
+      const cant = prompt('Piezas vendidas:', raw.cant ?? '');
+      if (cant === null) return;
+      raw.cant = Number(cant);
+      if (raw.tipo !== 'cemento') raw.m3 = Number(cant);
+      const precio = prompt('Precio unitario:', raw.precio ?? '0');
+      if (precio === null) return;
+      raw.precio = Number(precio);
+      const cliente = prompt('Cliente (opcional):', raw.cliente || '');
+      if (cliente === null) return;
+      raw.cliente = cliente;
+      const obra = prompt('Obra:', raw.obra || 'General');
+      if (obra === null) return;
+      raw.obra = obra || 'General';
+      const nota = prompt('Nota (opcional):', raw.nota || '');
+      if (nota === null) return;
+      raw.nota = nota;
+    }
+
+    if (item.mov === 'Defecto') {
+      const producto = prompt('Producto: tabicon o tabiqueChiquito', raw.producto || 'tabicon');
+      if (producto === null) return;
+      raw.producto = String(producto).trim();
+      const piezas = prompt('Piezas defectuosas:', raw.piezas ?? raw.cant ?? '');
+      if (piezas === null) return;
+      raw.piezas = Number(piezas);
+      const motivo = prompt('Motivo del defecto:', raw.motivo || '');
+      if (motivo === null) return;
+      raw.motivo = motivo;
+    }
+
+    const updated = buildHistFromRaw(raw, item);
+    if (!updated) { toast('Datos inválidos. No se guardó el cambio.'); return; }
+    const candidateEntries = getHistEntries().map(entry => entry.id === id ? { ...entry, ...updated } : entry);
+    const rebuilt = rebuildInventoryFromHist(candidateEntries);
+    if (!rebuilt) { toast('Ese cambio dejaría el inventario negativo.'); return; }
+    update(ref(db, 'historial/' + id), {
+      fecha: updated.fecha,
+      fechaISO: updated.fechaISO,
+      hora: updated.hora,
+      tipo: updated.tipo,
+      insumo: updated.insumo,
+      cantidad: updated.cantidad,
+      mov: updated.mov,
+      editable: updated.editable,
+      effect: updated.effect,
+      raw: updated.raw
+    });
+    saveInvState(rebuilt);
+    toast('✓ Movimiento editado y stock recalculado.');
+  };
+
+  window.eliminarMovimiento = function(id) {
+    if (!requireSecurityPin('borrar este movimiento')) return;
+    const item = historial[id];
+    if (!item) return;
+    if (!item.editable) { toast('Este movimiento no se puede borrar.'); return; }
+    if (!confirm('¿Eliminar este movimiento del historial?')) return;
+    const candidateEntries = getHistEntries().filter(entry => entry.id !== id);
+    const rebuilt = rebuildInventoryFromHist(candidateEntries);
+    if (!rebuilt) { toast('No se pudo borrar porque dejaría inventario negativo.'); return; }
+    remove(ref(db, 'historial/' + id));
+    saveInvState(rebuilt);
+    toast('✓ Movimiento eliminado y stock recalculado.');
+  };
+
+  window.setNotasSearch = function(value = '') {
+    notasSearch = String(value || '').toLowerCase().trim();
+    renderNotas();
+  };
+
+  function renderNotas() {
+    const hoy = new Date(); hoy.setHours(0,0,0,0);
+    const query = (notasSearch || '').toLowerCase().trim();
+    const notasLista = Object.entries(notas)
+      .map(([id, n]) => normalizeNota(id, n))
+      .filter(n => {
+        if (!query) return true;
+        const haystack = [n.cliente, n.obra, productLabel(n.producto), n.fecha, n.fechaLimite, n.estado, n.total, n.cant].join(' ').toLowerCase();
+        return haystack.includes(query);
+      })
+      .sort((a, b) => noteTimeValue(b) - noteTimeValue(a));
+
+    const grouped = {};
+    notasLista.forEach(n => {
+      const clienteKey = (n.cliente || 'Cliente sin nombre').trim() || 'Cliente sin nombre';
+      if (!grouped[clienteKey]) grouped[clienteKey] = { cliente: clienteKey, totalPendiente: 0, totalPagado: 0, obras: {} };
+      const obraKey = (n.obra || 'General').trim() || 'General';
+      if (!grouped[clienteKey].obras[obraKey]) grouped[clienteKey].obras[obraKey] = [];
+      grouped[clienteKey].obras[obraKey].push(n);
+      const sal = saldo(n);
+      grouped[clienteKey].totalPendiente += sal;
+      grouped[clienteKey].totalPagado += Math.max(0, (Number(n.total) || 0) - sal);
+    });
+
+    const clientesOrdenados = Object.values(grouped).sort((a, b) => b.totalPendiente - a.totalPendiente || a.cliente.localeCompare(b.cliente));
+
+    function notaCard(n) {
+      const sal = saldo(n);
+      const fechaLimiteISO = toInputDate(n.fechaLimite || '');
+      const vencida = fechaLimiteISO && new Date(fechaLimiteISO + 'T00:00:00') < hoy && n.estado !== 'pagada';
+      return `
+        <div class="nota-card ${vencida ? 'vencida' : ''} ${n.estado === 'pagada' ? 'pagada' : ''}">
+          <div class="nota-top">
+            <span class="nota-cliente">${n.cliente || 'Cliente sin nombre'} <small class="nota-obra-pill">${n.obra || 'General'}</small></span>
+            <span class="nota-badge ${n.estado === 'pagada' ? 'badge-pagada' : vencida ? 'badge-vencida' : 'badge-pendiente'}">${n.estado === 'pagada' ? 'Pagada' : vencida ? 'Vencida' : 'Pendiente'}</span>
+          </div>
+          <div class="nota-info">
+            <span>${fmt(n.cant)} ${productLabel(n.producto).toLowerCase()} · $${fmt(n.precio, 2)}/pza</span>
+            <span>Total: <b>$${fmt(n.total, 2)}</b></span>
+          </div>
+          <div class="nota-info">
+            <span>Fecha: ${n.fecha || '—'}</span>
+            <span>Límite: ${n.fechaLimite || '—'}</span>
+          </div>
+          ${n.abonos.length > 0 ? '<div class="abonos-lista">' + n.abonos.map((a, idx) => `<span>Abono ${a.fecha || '—'}: $${fmt(Number(a.monto) || 0, 2)} <button class="abono-edit-btn" onclick="editarAbono('${n.id}', ${idx})">Editar</button> <button class="abono-del-btn" onclick="eliminarAbono('${n.id}', ${idx})">×</button></span>`).join('') + '</div>' : ''}
+          <div class="nota-saldo">Saldo pendiente: <b>$${fmt(sal, 2)}</b></div>
+          <div class="nota-acciones">
+            ${n.estado !== 'pagada' ? `<button class="btn-accion btn-abonar" onclick="abonar('${n.id}')">Abonar</button>` : ''}
+            ${n.estado !== 'pagada' ? `<button class="btn-accion btn-pagar" onclick="marcarPagada('${n.id}')">Marcar pagada</button>` : ''}
+            <button class="btn-accion btn-eliminar" onclick="eliminarNota('${n.id}')">Eliminar</button>
+          </div>
+        </div>`;
+    }
+
+    function renderClientes(targetEstado) {
+      const cards = clientesOrdenados.map(cliente => {
+        const obrasHtml = Object.entries(cliente.obras)
+          .map(([obra, items]) => {
+            const filtradas = items.filter(n => targetEstado === 'pagada' ? n.estado === 'pagada' : n.estado !== 'pagada');
+            if (!filtradas.length) return '';
+            const obraTotal = filtradas.reduce((s, n) => s + (targetEstado === 'pagada' ? ((Number(n.total) || 0) - saldo(n)) : saldo(n)), 0);
+            return `
+              <div class="obra-group">
+                <div class="obra-header">
+                  <span>${obra}</span>
+                  <span>$${fmt(obraTotal, 2)}</span>
+                </div>
+                ${filtradas.sort((a,b)=>noteTimeValue(b)-noteTimeValue(a)).map(notaCard).join('')}
+              </div>`;
+          }).join('');
+        if (!obrasHtml) return '';
+        const totalCliente = targetEstado === 'pagada' ? cliente.totalPagado : cliente.totalPendiente;
+        return `
+          <div class="cliente-group">
+            <div class="cliente-header">
+              <div>
+                <div class="cliente-nombre">${cliente.cliente}</div>
+                <div class="cliente-sub">${Object.keys(cliente.obras).length} obra(s)</div>
+              </div>
+              <div class="cliente-total">$${fmt(totalCliente, 2)}</div>
+            </div>
+            ${obrasHtml}
+          </div>`;
+      }).join('');
+      return cards || `<div class="empty">${query ? 'No se encontraron notas con ese texto.' : (targetEstado === 'pagada' ? 'Sin notas pagadas.' : 'Sin notas pendientes.')}</div>`;
+    }
+
+    const elP = document.getElementById('notas-pendientes');
+    const elPg = document.getElementById('notas-pagadas');
+    if (elP) elP.innerHTML = renderClientes('pendiente');
+    if (elPg) elPg.innerHTML = renderClientes('pagada');
+  }
+
+  // ── HISTORIAL ────────────────────────────────────────────────
+  function histDateValue(h = {}) {
+    const iso = h.fechaISO || toInputDate(h.fecha || '') || '1970-01-01';
+    return new Date(iso + 'T' + (h.hora || '00:00')).getTime();
+  }
+
+  function histLabel(mov = '') {
+    const map = { all: 'Todos', Entrada: 'Entradas', Producción: 'Producción', Defecto: 'Defectos', Venta: 'Ventas', Nota: 'Notas', Abono: 'Abonos' };
+    return map[mov] || mov;
+  }
+
+  window.histFilter = 'all';
+  window.showHistFilter = function(filter = 'all', btn) {
+    window.histFilter = filter;
+    document.querySelectorAll('.hist-filter-btn').forEach(b => b.classList.remove('active'));
+    if (btn) btn.classList.add('active');
+    else {
+      const autoBtn = document.querySelector(`.hist-filter-btn[data-filter="${filter}"]`);
+      if (autoBtn) autoBtn.classList.add('active');
+    }
+    renderHistorial();
+  };
+
+  window.updateHistSearch = function() {
+    window.histSearch = (gv('hist-search') || '').trim().toLowerCase();
+    renderHistorial();
+  };
+
+  function histMatchesSearch(item, query) {
+    if (!query) return true;
+    const haystack = [
+      item.fecha || '',
+      item.hora || '',
+      item.insumo || '',
+      item.cantidad || '',
+      item.mov || '',
+      item.tipo || '',
+      item.raw?.cliente || '',
+      item.raw?.obra || '',
+      item.raw?.nota || '',
+      item.raw?.proveedor || '',
+      item.raw?.motivo || ''
+    ].join(' ').toLowerCase();
+    return haystack.includes(query);
+  }
+
+  function renderHistorial() {
+    const lista = document.getElementById('historial-lista');
+    if (!lista) return;
+    const allItems = getHistEntries().sort((a, b) => histDateValue(b) - histDateValue(a));
+    if (!allItems.length) { lista.innerHTML = '<div class="empty">Sin movimientos aún.</div>'; return; }
+    const colors = { Entrada: 'badge-in', Producción: 'badge-prod', Defecto: 'badge-defecto', Venta: 'badge-out', Nota: 'badge-nota', Abono: 'badge-abono' };
+    const groups = ['Entrada', 'Producción', 'Defecto', 'Venta', 'Nota', 'Abono'];
+    const filter = window.histFilter || 'all';
+    const query = (window.histSearch || '').trim().toLowerCase();
+    const useGroups = filter === 'all' ? groups : [filter];
+
+    lista.innerHTML = useGroups.map(group => {
+      const items = allItems.filter(h => h.mov === group && histMatchesSearch(h, query));
+      if (!items.length) return '';
+      return `
+        <div class="hist-group">
+          <div class="hist-group-title">${histLabel(group)} <span>${items.length}</span></div>
+          ${items.map(h => `
+            <div class="hist-row hist-row-acciones">
+              <span class="hist-fecha">${h.fecha || '—'} ${h.hora || ''}</span>
+              <span>${h.insumo || '—'}</span>
+              <span>${h.cantidad || '—'}</span>
+              <span><span class="badge ${colors[h.mov] || 'badge-in'}">${h.mov}</span></span>
+              <span class="hist-actions">${h.editable ? `<button class="hist-btn" onclick="editarMovimiento('${h.id}')">Editar</button><button class="hist-btn hist-btn-danger" onclick="eliminarMovimiento('${h.id}')">Borrar</button>` : '<span class="hist-lock">Fijo</span>'}</span>
+            </div>`).join('')}
+        </div>`;
+    }).join('') || '<div class="empty">Sin movimientos en esta categoría.</div>';
+  }
+
+  // ── UTILS ────────────────────────────────────────────────────
+  function fmt(n, dec = 0) { return Number(n).toLocaleString('es-MX', { minimumFractionDigits: dec, maximumFractionDigits: dec }); }
+  function gv(id) { return document.getElementById(id)?.value || ''; }
+  function sv(id, v) { const el = document.getElementById(id); if (el) el.value = v; }
+  function setVal(id, v) { const el = document.getElementById(id); if (el) el.textContent = v; }
+  function toast(msg) {
+    let t = document.getElementById('toast');
+    if (!t) { t = document.createElement('div'); t.id = 'toast'; document.body.appendChild(t); }
+    t.textContent = msg; t.className = 'toast show';
+    setTimeout(() => t.className = 'toast', 2800);
+  }
+
+  refreshDateInputs();
+  renderStorage();
+
+  function histSortValue(h = {}) {
+    const iso = h.fechaISO || toInputDate(h.fecha || '');
+    const time = h.hora || '00:00';
+    return new Date(`${iso || '1970-01-01'}T${time.length===5?time+':00':time}`).getTime() || 0;
+  }
+
+  function normalizeHistItemForExport(id, h = {}) {
+    return {
+      id,
+      fecha: h.fecha || '',
+      hora: h.hora || '',
+      fechaISO: h.fechaISO || toInputDate(h.fecha || ''),
+      movimiento: h.mov || '',
+      tipo: h.tipo || '',
+      insumo: h.insumo || '',
+      cantidad: h.cantidad || '',
+      editable: h.editable ? 'Sí' : 'No',
+      producto: h.raw?.producto ? productLabel(h.raw.producto) : (h.raw?.categoriaProducto ? productLabel(h.raw.categoriaProducto) : ''),
+      detalle: h.raw?.nota || h.raw?.proveedor || h.raw?.cliente || ''
+    };
+  }
+
+  window.exportarTodoExcel = function() {
+    try {
+      if (typeof XLSX === 'undefined') { toast('No se pudo cargar el exportador de Excel.'); return; }
+      const wb = XLSX.utils.book_new();
+
+      const inventarioRows = [{
+        fecha_exportacion: new Date().toLocaleString('es-MX'),
+        tabicon: Number(inv.tabicon) || 0,
+        tabique_chiquito: Number(inv.tabiqueChiquito) || 0,
+        cemento_bultos: Number(inv.cemento) || 0,
+        balastre_m3: Number(inv.balastre) || 0,
+        confetillo_m3: Number(inv.confetillo) || 0
+      }];
+
+      const historialRows = Object.entries(historial)
+        .map(([id, h]) => normalizeHistItemForExport(id, h))
+        .sort((a, b) => {
+          const av = new Date(`${a.fechaISO || '1970-01-01'}T${(a.hora || '00:00').length===5?(a.hora||'00:00')+':00':(a.hora||'00:00')}`).getTime() || 0;
+          const bv = new Date(`${b.fechaISO || '1970-01-01'}T${(b.hora || '00:00').length===5?(b.hora||'00:00')+':00':(b.hora||'00:00')}`).getTime() || 0;
+          return bv - av;
+        });
+
+      const notasRows = Object.entries(notas)
+        .map(([id, raw]) => normalizeNota(id, raw))
+        .sort((a,b) => noteTimeValue(b) - noteTimeValue(a))
+        .map(n => ({
+          id: n.id,
+          cliente: n.cliente || '',
+          producto: productLabel(n.producto),
+          cantidad_piezas: Number(n.cant) || 0,
+          precio_unitario: Number(n.precio) || 0,
+          total: Number(n.total) || 0,
+          abonado: (n.abonos || []).reduce((s, a) => s + (Number(a.monto) || 0), 0),
+          saldo_pendiente: saldo(n),
+          estado: n.estado || '',
+          fecha: n.fecha || '',
+          fecha_limite: n.fechaLimite || '',
+          abonos: (n.abonos || []).map(a => `${a.fecha || ''}: $${fmt(Number(a.monto) || 0, 2)}`).join(' | ')
+        }));
+
+      const abonosRows = Object.entries(notas)
+        .flatMap(([id, raw]) => {
+          const n = normalizeNota(id, raw);
+          return (n.abonos || []).map((a, idx) => ({
+            nota_id: id,
+            indice_abono: idx + 1,
+            cliente: n.cliente || '',
+            producto: productLabel(n.producto),
+            fecha_abono: a.fecha || '',
+            monto: Number(a.monto) || 0
+          }));
+        });
+
+      XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(inventarioRows), 'Inventario');
+      XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(historialRows), 'Historial');
+      XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(notasRows), 'Notas');
+      XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(abonosRows.length ? abonosRows : [{ nota_id:'', indice_abono:'', cliente:'', producto:'', fecha_abono:'', monto:'' }]), 'Abonos');
+
+      const filename = `inventario_tabirock_${new Date().toISOString().slice(0,10)}.xlsx`;
+      XLSX.writeFile(wb, filename);
+      toast('✓ Excel exportado.');
+    } catch (e) {
+      console.error(e);
+      toast('Error al exportar Excel.');
+    }
+  };
+
+  window.borrarTodoFirebase = function() {
+    const password = prompt('Escribe la contraseña para borrar todo:');
+    if (password === null) return;
+    if (password !== 'Tabirock') {
+      toast('Contraseña incorrecta.');
+      return;
+    }
+    const second = confirm('Esto borrará TODO en Firebase: inventario, historial y notas. ¿Continuar?');
+    if (!second) return;
+    remove(ref(db))
+      .then(() => {
+        inv = cloneInvState({});
+        historial = {};
+        notas = {};
+        renderDashboard();
+        renderHistorial();
+        renderNotas();
+        renderStorage();
+        toast('✓ Firebase borrado por completo.');
+      })
+      .catch(err => {
+        console.error(err);
+        toast('No se pudo borrar Firebase.');
+      });
+  };
+
+  window._appReady = true;
+  setTimeout(() => { if (window.setEntradaCategoria) setEntradaCategoria('cemento'); }, 30);
+</script>
+
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Sora:wght@400;500;600&display=swap');
+
+  :root {
+    --bg: #f5f4f0;
+    --surface: #ffffff;
+    --surface2: #efefeb;
+    --border: #e0dfd8;
+    --text: #1c1c1a;
+    --text2: #6b6b65;
+    --text3: #9a9a94;
+    --accent: #2d6a4f;
+    --accent-light: #d8f3dc;
+    --accent-dark: #1b4332;
+    --amber: #e76f00;
+    --amber-light: #fff3e0;
+    --red: #c0392b;
+    --red-light: #fdecea;
+    --blue: #1565c0;
+    --blue-light: #e3f2fd;
+    --radius: 12px;
+    --radius-sm: 8px;
+    --shadow: 0 1px 3px rgba(0,0,0,0.06), 0 1px 2px rgba(0,0,0,0.04);
+  }
+
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+
+  body {
+    font-family: 'Sora', sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    font-size: 15px;
+    min-height: 100vh;
+    padding-bottom: env(safe-area-inset-bottom, 80px);
+  }
+
+  /* Header */
+  .header {
+    background: var(--accent-dark);
+    color: white;
+    padding: 18px 20px 14px;
+    position: sticky; top: 0; z-index: 100;
+    display: flex; align-items: center; justify-content: space-between;
+  }
+  .header h1 { font-size: 17px; font-weight: 600; letter-spacing: -0.3px; }
+  .header p { font-size: 11px; opacity: 0.65; margin-top: 2px; }
+  .sync-dot { width: 8px; height: 8px; border-radius: 50%; background: #52b788; }
+
+  /* Nav tabs */
+  .nav { display: flex; overflow-x: auto; background: var(--surface); border-bottom: 1px solid var(--border); scrollbar-width: none; }
+  .nav::-webkit-scrollbar { display: none; }
+  .nav-btn { flex: none; padding: 13px 18px; font-size: 13px; font-family: 'Sora', sans-serif; font-weight: 500; color: var(--text2); background: none; border: none; border-bottom: 2px solid transparent; cursor: pointer; white-space: nowrap; transition: all 0.15s; }
+  .nav-btn.active { color: var(--accent-dark); border-color: var(--accent-dark); }
+
+  /* Content */
+  .content { padding: 18px 16px; max-width: 520px; margin: 0 auto; }
+
+  /* Section */
+  .section { display: none; }
+  .section.active { display: block; }
+
+  /* Alertas */
+  .alerta { background: var(--amber-light); border-left: 3px solid var(--amber); border-radius: var(--radius-sm); padding: 10px 14px; font-size: 13px; color: #7c3600; margin-bottom: 10px; }
+
+  /* Metric cards */
+  .cards { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-bottom: 16px; }
+  .card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 14px 16px; box-shadow: var(--shadow); }
+  .card-label { font-size: 11px; color: var(--text3); font-weight: 500; text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 6px; }
+  .card-value { font-size: 26px; font-weight: 600; color: var(--text); line-height: 1; }
+  .card-unit { font-size: 11px; color: var(--text3); margin-top: 4px; }
+  .card.accent { background: var(--accent-dark); border-color: transparent; }
+  .card.accent .card-label, .card.accent .card-unit { color: rgba(255,255,255,0.6); }
+  .card.accent .card-value { color: white; }
+
+  /* Section title */
+  .section-title { font-size: 12px; font-weight: 600; color: var(--text3); text-transform: uppercase; letter-spacing: 0.7px; margin: 20px 0 10px; padding-bottom: 6px; border-bottom: 1px solid var(--border); }
+
+  /* Forms */
+  .form-box { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 16px; margin-bottom: 14px; box-shadow: var(--shadow); }
+  .form-title { font-size: 14px; font-weight: 600; margin-bottom: 14px; color: var(--text); }
+  .form-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+  .form-group { display: flex; flex-direction: column; gap: 5px; }
+  .form-group.full { grid-column: 1 / -1; }
+  .form-group label { font-size: 11px; font-weight: 600; color: var(--text2); text-transform: uppercase; letter-spacing: 0.4px; }
+  .form-group input, .form-group select {
+    font-family: 'Sora', sans-serif; font-size: 14px;
+    border: 1px solid var(--border); border-radius: var(--radius-sm);
+    padding: 9px 12px; background: var(--bg); color: var(--text);
+    outline: none; transition: border 0.15s;
+  }
+  .form-group input:focus, .form-group select:focus { border-color: var(--accent); background: white; }
+
+  .preview { background: var(--surface2); border-radius: var(--radius-sm); padding: 10px 14px; font-size: 13px; color: var(--text2); line-height: 1.7; margin-top: 10px; }
+  .preview b { color: var(--text); }
+
+  .btn { padding: 10px 20px; border-radius: var(--radius-sm); font-family: 'Sora', sans-serif; font-size: 13px; font-weight: 600; cursor: pointer; border: none; transition: all 0.15s; }
+  .btn-primary { background: var(--accent-dark); color: white; }
+  .btn-danger { background: var(--red); color: white; }
+  .btn-primary:active, .btn-danger:active { transform: scale(0.97); }
+  .btn-row { margin-top: 14px; display: flex; gap: 8px; }
+  .panel-actions { display:flex; gap:10px; flex-wrap:wrap; margin-top:14px; }
+  .panel-actions .btn { flex:1 1 220px; }
+
+  /* Historial */
+  .hist-search-box { margin-bottom: 10px; }
+  .hist-table { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); overflow: hidden; box-shadow: var(--shadow); }
+  .hist-header { display: grid; grid-template-columns: 90px 1fr 1fr 64px 118px; padding: 9px 14px; background: var(--surface2); font-size: 11px; font-weight: 600; color: var(--text3); text-transform: uppercase; letter-spacing: 0.4px; }
+  .hist-row { display: grid; grid-template-columns: 90px 1fr 1fr 64px 118px; padding: 11px 14px; font-size: 13px; border-top: 1px solid var(--border); align-items: center; gap: 8px; }
+  .hist-row:hover { background: var(--bg); }
+  .hist-fecha { font-size: 12px; color: var(--text3); }
+  .hist-actions { display: flex; gap: 6px; flex-wrap: wrap; justify-content: flex-start; }
+  .hist-btn { padding: 6px 10px; border-radius: 8px; border: 1px solid var(--border); background: white; font-family: 'Sora', sans-serif; font-size: 11px; font-weight: 600; cursor: pointer; }
+  .hist-btn-danger { background: var(--red-light); color: var(--red); border-color: #f5c6c2; }
+  .hist-lock { font-size: 11px; color: var(--text3); }
+  .hist-filters { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 12px; }
+  .hist-filter-btn { padding: 7px 12px; border-radius: 20px; border: 1px solid var(--border); background: var(--surface); color: var(--text2); font-family: 'Sora', sans-serif; font-size: 12px; font-weight: 600; cursor: pointer; }
+  .hist-filter-btn.active { background: var(--accent-dark); color: white; border-color: transparent; }
+  .hist-group + .hist-group { border-top: 1px solid var(--border); }
+  .hist-group-title { padding: 11px 14px; background: var(--surface2); font-size: 12px; font-weight: 700; color: var(--accent-dark); display: flex; justify-content: space-between; align-items: center; }
+  .hist-group-title span { color: var(--text3); font-weight: 600; }
+
+  /* Badges */
+  .badge { display: inline-block; padding: 3px 9px; border-radius: 20px; font-size: 11px; font-weight: 600; }
+  .badge-in { background: var(--accent-light); color: var(--accent-dark); }
+  .badge-out { background: var(--red-light); color: var(--red); }
+  .badge-prod { background: var(--blue-light); color: var(--blue); }
+  .badge-defecto { background: #fff0f0; color: #b42318; }
+  .badge-nota { background: #fff3e0; color: #7c3600; }
+  .badge-abono { background: #f3e5f5; color: #6a1b9a; }
+  .badge-pendiente { background: #fff3e0; color: #7c3600; }
+  .badge-vencida { background: var(--red-light); color: var(--red); }
+  .badge-pagada { background: var(--accent-light); color: var(--accent-dark); }
+
+  /* Notas */
+  .nota-card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 14px 16px; margin-bottom: 12px; box-shadow: var(--shadow); }
+  .nota-card.vencida { border-left: 3px solid var(--red); }
+  .nota-card.pagada { opacity: 0.65; }
+  .nota-top { display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; }
+  .nota-cliente { font-size: 15px; font-weight: 600; }
+  .nota-info { display: flex; justify-content: space-between; font-size: 13px; color: var(--text2); margin-bottom: 4px; }
+  .nota-saldo { font-size: 14px; color: var(--text); margin: 10px 0 6px; }
+  .nota-acciones { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 10px; }
+  .btn-accion { padding: 7px 14px; border-radius: var(--radius-sm); font-family: 'Sora', sans-serif; font-size: 12px; font-weight: 600; cursor: pointer; border: 1px solid; transition: all 0.15s; }
+  .btn-abonar { background: var(--blue-light); color: var(--blue); border-color: #90caf9; }
+  .btn-pagar { background: var(--accent-light); color: var(--accent-dark); border-color: #95d5b2; }
+  .btn-eliminar { background: var(--red-light); color: var(--red); border-color: #f5c6c2; }
+  .abonos-lista { font-size: 12px; color: var(--text3); margin: 6px 0; display: flex; flex-wrap: wrap; gap: 6px; }
+  .abonos-lista span { background: var(--surface2); padding: 2px 8px; border-radius: 20px; }
+  .cliente-group { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 14px; margin-bottom: 14px; box-shadow: var(--shadow); }
+  .cliente-header { display:flex; justify-content:space-between; align-items:flex-start; gap:12px; margin-bottom:10px; }
+  .cliente-nombre { font-size:16px; font-weight:600; }
+  .cliente-sub { font-size:12px; color: var(--text3); margin-top:2px; }
+  .cliente-total { font-size:18px; font-weight:700; color: var(--accent-dark); }
+  .obra-group { background: var(--bg); border: 1px solid var(--border); border-radius: var(--radius-sm); padding: 10px; margin-top: 10px; }
+  .obra-header { display:flex; justify-content:space-between; align-items:center; font-size:13px; font-weight:600; color: var(--text2); margin-bottom:8px; }
+  .nota-obra-pill { font-size:11px; font-weight:600; color: var(--accent-dark); background: var(--accent-light); padding: 3px 8px; border-radius: 999px; margin-left: 6px; }
+  .security-hint { font-size: 12px; color: var(--text3); margin-top: 8px; }
+
+  .subtab-row { display: flex; gap: 8px; margin-bottom: 14px; }
+  .subtab { padding: 7px 16px; border-radius: 20px; font-size: 13px; font-weight: 600; font-family: 'Sora', sans-serif; cursor: pointer; border: 1px solid var(--border); background: var(--surface); color: var(--text2); transition: all 0.15s; }
+  .subtab.active { background: var(--accent-dark); color: white; border-color: transparent; }
+
+  .toolbar-search { margin-bottom: 12px; }
+  .toolbar-search input {
+    width: 100%; font-family: 'Sora', sans-serif; font-size: 14px;
+    border: 1px solid var(--border); border-radius: var(--radius-sm);
+    padding: 10px 12px; background: var(--surface); color: var(--text);
+  }
+  .entrada-cat-row { display: flex; gap: 8px; margin-bottom: 12px; flex-wrap: wrap; }
+  .entrada-cat-btn { padding: 7px 14px; border-radius: 20px; font-size: 12px; font-weight: 600; font-family: 'Sora', sans-serif; cursor: pointer; border: 1px solid var(--border); background: var(--surface); color: var(--text2); }
+  .entrada-cat-btn.active { background: var(--accent-dark); color: white; border-color: transparent; }
+  .hist-btn-danger { background: var(--red-light); color: var(--red); border-color: #f5c6c2; }
+  .abono-edit-btn { margin-left: 8px; border: none; background: transparent; color: var(--blue); font-weight: 600; font-size: 11px; cursor: pointer; }
+  .abono-del-btn { margin-left: 6px; border: none; background: transparent; color: var(--red); font-weight: 700; cursor: pointer; }
+
+  .empty { text-align: center; padding: 28px; font-size: 13px; color: var(--text3); }
+
+  /* Toast */
+  .toast { position: fixed; bottom: 90px; left: 50%; transform: translateX(-50%) translateY(20px); background: var(--accent-dark); color: white; padding: 11px 22px; border-radius: 40px; font-size: 13px; font-weight: 500; opacity: 0; transition: all 0.25s; pointer-events: none; white-space: nowrap; z-index: 9999; }
+  .toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
+</style>
+</head>
+<body>
+
+<div class="header">
+  <div>
+    <h1>Inventario de Tabiques</h1>
+    <p>Tabicón · Tabique chiquito · Ventas · Créditos</p>
+  </div>
+  <div class="sync-dot" title="Conectado"></div>
+</div>
+
+<nav class="nav">
+  <button class="nav-btn active" onclick="showTab('dashboard', this)">Panel</button>
+  <button class="nav-btn" onclick="showTab('entrada', this)">Entrada</button>
+  <button class="nav-btn" onclick="showTab('produccion', this)">Producción</button>
+  <button class="nav-btn" onclick="showTab('venta', this)">Venta</button>
+  <button class="nav-btn" onclick="showTab('notas', this)">Notas</button>
+  <button class="nav-btn" onclick="showTab('historial', this)">Historial</button>
+</nav>
+
+<div class="content">
+
+  <!-- DASHBOARD -->
+  <div class="section active" id="tab-dashboard">
+    <div id="alertas"></div>
+    <div class="section-title">Inventario actual</div>
+    <div class="cards">
+      <div class="card accent"><div class="card-label">Tabicón</div><div class="card-value" id="val-tabicon">—</div><div class="card-unit">piezas</div></div>
+      <div class="card"><div class="card-label">Tabique chiquito</div><div class="card-value" id="val-tabique-chiquito">—</div><div class="card-unit">piezas</div></div>
+      <div class="card"><div class="card-label">Cemento</div><div class="card-value" id="val-cemento">—</div><div class="card-unit">bultos</div></div>
+      <div class="card"><div class="card-label">Balastre</div><div class="card-value" id="val-balastre">—</div><div class="card-unit">m³</div></div>
+      <div class="card"><div class="card-label">Confetillo</div><div class="card-value" id="val-confetillo">—</div><div class="card-unit">m³</div></div>
+    </div>
+    <div class="section-title">Capacidad de producción</div>
+    <div class="cards">
+      <div class="card"><div class="card-label">Piezas posibles</div><div class="card-value" id="cap-cemento">—</div><div class="card-unit">con cemento actual</div></div>
+      <div class="card"><div class="card-label">Balastre alcanza</div><div class="card-value" id="cap-balastre">—</div><div class="card-unit">bultos de cemento</div></div>
+      <div class="card"><div class="card-label">Confetillo alcanza</div><div class="card-value" id="cap-confetillo">—</div><div class="card-unit">bultos de cemento</div></div>
+      <div class="card"><div class="card-label">Notas por cobrar</div><div class="card-value" id="val-notas-pendientes">—</div><div class="card-unit" id="val-monto-pendiente">clientes</div></div>
+      <div class="card"><div class="card-label">Uso nube estimado</div><div class="card-value" id="storage-used">—</div><div class="card-unit">datos guardados</div></div>
+      <div class="card"><div class="card-label">Disponible aprox.</div><div class="card-value" id="storage-remaining">—</div><div class="card-unit">referencia Spark 1 GB</div></div>
+    </div>
+    <div class="panel-actions">
+      <button class="btn btn-primary" onclick="exportarTodoExcel()">Exportar todo a Excel</button>
+      <button class="btn btn-danger" onclick="borrarTodoFirebase()">Borrar todo Firebase</button>
+    </div>
+  </div>
+
+  <!-- ENTRADA -->
+  <div class="section" id="tab-entrada">
+    <div class="form-box">
+      <div class="form-title">Registrar entrada de insumo</div>
+      <div class="entrada-cat-row">
+        <button class="entrada-cat-btn active" data-tipo="cemento" onclick="setEntradaCategoria('cemento', this)">Cemento</button>
+        <button class="entrada-cat-btn" data-tipo="balastre" onclick="setEntradaCategoria('balastre', this)">Balastre</button>
+        <button class="entrada-cat-btn" data-tipo="confetillo" onclick="setEntradaCategoria('confetillo', this)">Confetillo</button>
+      </div>
+      <div class="form-grid">
+        <div class="form-group" style="display:none">
+          <label>Insumo</label>
+          <select id="in-tipo" onchange="updateEntradaPreview()">
+            <option value="cemento">Cemento (bultos)</option>
+            <option value="balastre">Balastre (m³ reales)</option>
+            <option value="confetillo">Confetillo (m³ reales)</option>
+          </select>
+        </div>
+        <div class="form-group">
+          <label id="in-cant-label">Cantidad</label>
+          <input type="number" id="in-cant" min="0.01" value="1" step="0.01" oninput="updateEntradaPreview()">
+        </div>
+        <div class="form-group" id="in-precio-ton-wrap" style="display:none">
+          <label>Precio por tonelada ($)</label>
+          <input type="number" id="in-precio-ton" min="0" value="" step="0.01" oninput="updateEntradaPreview()" placeholder="Solo cemento">
+        </div>
+        <div class="form-group">
+          <label>Fecha</label>
+          <input type="date" id="in-fecha">
+        </div>
+        <div class="form-group">
+          <label>Proveedor</label>
+          <input type="text" id="in-proveedor" placeholder="Opcional">
+        </div>
+        <div class="form-group">
+          <label>Nota</label>
+          <input type="text" id="in-nota" placeholder="Opcional">
+        </div>
+      </div>
+      <div class="preview" id="entrada-preview">Selecciona un insumo.</div>
+      <div class="btn-row">
+        <button class="btn btn-primary" onclick="registrarEntrada()">Registrar entrada</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- PRODUCCIÓN -->
+  <div class="section" id="tab-produccion">
+    <div class="form-box">
+      <div class="form-title">Registrar producción</div>
+      <div class="form-grid">
+        <div class="form-group">
+          <label>Producto</label>
+          <select id="prod-producto" onchange="updateProdPreview()">
+            <option value="tabicon">Tabicón</option>
+            <option value="tabiqueChiquito">Tabique chiquito</option>
+          </select>
+        </div>
+        <div class="form-group">
+          <label>Bultos de cemento usados</label>
+          <input type="number" id="prod-bultos" min="1" value="1" oninput="updateProdPreview()">
+        </div>
+        <div class="form-group">
+          <label>Tabiques por bulto</label>
+          <input type="number" id="prod-rendimiento" min="1" step="0.01" value="125" oninput="updateProdPreview()">
+        </div>
+        <div class="form-group">
+          <label>Piezas producidas (auto)</label>
+          <input type="number" id="prod-piezas" min="0" value="125" readonly>
+        </div>
+        <div class="form-group full">
+          <label>Fecha de producción</label>
+          <input type="date" id="prod-fecha">
+        </div>
+      </div>
+      <div class="preview" id="prod-preview">—</div>
+      <div class="btn-row">
+        <button class="btn btn-primary" onclick="registrarProduccion()">Registrar producción</button>
+      </div>
+    </div>
+
+    <div class="form-box">
+      <div class="form-title">Registrar defectos de producción</div>
+      <div class="form-grid">
+        <div class="form-group">
+          <label>Producto</label>
+          <select id="def-producto" onchange="updateDefectosPreview()">
+            <option value="tabicon">Tabicón</option>
+            <option value="tabiqueChiquito">Tabique chiquito</option>
+          </select>
+        </div>
+        <div class="form-group">
+          <label>Piezas defectuosas</label>
+          <input type="number" id="def-cant" min="1" value="0" oninput="updateDefectosPreview()">
+        </div>
+        <div class="form-group full">
+          <label>Motivo</label>
+          <input type="text" id="def-motivo" placeholder="Ej. quebrados, mal moldeados, húmedos" oninput="updateDefectosPreview()">
+        </div>
+        <div class="form-group full">
+          <label>Fecha del defecto</label>
+          <input type="date" id="def-fecha">
+        </div>
+      </div>
+      <div class="preview" id="def-preview">—</div>
+      <div class="btn-row">
+        <button class="btn btn-danger" onclick="registrarDefecto()">Descontar defectos</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- VENTA -->
+  <div class="section" id="tab-venta">
+    <div class="form-box">
+      <div class="form-title">Registrar venta</div>
+      <div class="form-grid">
+        <div class="form-group">
+          <label>Producto</label>
+          <select id="venta-producto" onchange="updateVentaPreview()">
+            <option value="tabicon">Tabicón</option>
+            <option value="tabiqueChiquito">Tabique chiquito</option>
+          </select>
+        </div>
+        <div class="form-group">
+          <label>Piezas</label>
+          <input type="number" id="venta-cant" min="1" value="100" oninput="updateVentaPreview()">
+        </div>
+        <div class="form-group">
+          <label>Precio unitario ($)</label>
+          <input type="number" id="venta-precio" min="0" value="0" step="0.5" oninput="updateVentaPreview()">
+        </div>
+        <div class="form-group">
+          <label>Cliente</label>
+          <input type="text" id="venta-cliente" placeholder="Opcional">
+        </div>
+        <div class="form-group">
+          <label>Obra</label>
+          <input type="text" id="venta-obra" placeholder="Ej. Casa López / General">
+        </div>
+        <div class="form-group full">
+          <label>Nota</label>
+          <input type="text" id="venta-nota" placeholder="Opcional">
+        </div>
+      </div>
+      <div class="preview" id="venta-preview">—</div>
+      <div class="btn-row">
+        <button class="btn btn-primary" onclick="registrarVenta()">Registrar venta</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- NOTAS -->
+  <div class="section" id="tab-notas">
+    <div class="form-box">
+      <div class="form-title">Nueva nota / cuenta por cobrar</div><div class="preview" style="margin-top:0;margin-bottom:12px">Esta sección ya no descuenta inventario. El inventario se mueve con Producción y Venta. Las ventas generan una nota pendiente automáticamente.</div>
+      <div class="form-grid">
+        <div class="form-group">
+          <label>Cliente</label>
+          <input type="text" id="nota-cliente" placeholder="Nombre del cliente">
+        </div>
+        <div class="form-group">
+          <label>Obra</label>
+          <input type="text" id="nota-obra" placeholder="Ej. Casa López / General">
+        </div>
+        <div class="form-group">
+          <label>Producto</label>
+          <select id="nota-producto" onchange="updateNotaPreview()">
+            <option value="tabicon">Tabicón</option>
+            <option value="tabiqueChiquito">Tabique chiquito</option>
+          </select>
+        </div>
+        <div class="form-group">
+          <label>Piezas</label>
+          <input type="number" id="nota-cant" min="1" value="0" oninput="updateNotaPreview()">
+        </div>
+        <div class="form-group">
+          <label>Precio unitario ($)</label>
+          <input type="number" id="nota-precio" min="0" value="0" step="0.5" oninput="updateNotaPreview()">
+        </div>
+        <div class="form-group full">
+          <label>Fecha límite de pago</label>
+          <input type="date" id="nota-fecha">
+        </div>
+      </div>
+      <div class="preview" id="nota-preview">—</div>
+      <div class="btn-row">
+        <button class="btn btn-primary" onclick="registrarNota()">Crear nota</button>
+      </div>
+    </div>
+
+    <div class="toolbar-search">
+      <input type="text" id="notas-search" placeholder="Buscar por cliente, obra, producto, fecha o monto" oninput="setNotasSearch(this.value)">
+      <div class="security-hint">Edición, borrado, abonos y marcar pagada requieren PIN.</div>
+    </div>
+
+    <div class="subtab-row">
+      <button class="subtab active" onclick="showSubtab('notas-pendientes', this)">Por cobrar</button>
+      <button class="subtab" onclick="showSubtab('notas-pagadas', this)">Cobradas</button>
+    </div>
+
+    <div id="notas-pendientes"><div class="empty">Sin notas pendientes.</div></div>
+    <div id="notas-pagadas" style="display:none"><div class="empty">Sin notas cobradas.</div></div>
+  </div>
+
+  <!-- HISTORIAL -->
+  <div class="section" id="tab-historial">
+    <div class="form-box hist-search-box">
+      <div class="form-group full">
+        <label>Buscar en historial</label>
+        <input type="text" id="hist-search" placeholder="Fecha, cliente, proveedor, nota, movimiento..." oninput="updateHistSearch()">
+      </div>
+    </div>
+    <div class="hist-filters">
+      <button class="hist-filter-btn active" data-filter="all" onclick="showHistFilter('all', this)">Todos</button>
+      <button class="hist-filter-btn" data-filter="Entrada" onclick="showHistFilter('Entrada', this)">Entradas</button>
+      <button class="hist-filter-btn" data-filter="Producción" onclick="showHistFilter('Producción', this)">Producción</button>
+      <button class="hist-filter-btn" data-filter="Defecto" onclick="showHistFilter('Defecto', this)">Defectos</button>
+      <button class="hist-filter-btn" data-filter="Venta" onclick="showHistFilter('Venta', this)">Ventas</button>
+      <button class="hist-filter-btn" data-filter="Nota" onclick="showHistFilter('Nota', this)">Notas</button>
+      <button class="hist-filter-btn" data-filter="Abono" onclick="showHistFilter('Abono', this)">Abonos</button>
+    </div>
+    <div class="hist-table">
+      <div class="hist-header"><span>Fecha</span><span>Insumo</span><span>Cantidad</span><span>Tipo</span><span>Acciones</span></div>
+      <div id="historial-lista"><div class="empty">Sin movimientos.</div></div>
+    </div>
+  </div>
+
+</div><!-- /content -->
+
+<script>
+  function showTab(id, btn) {
+    document.querySelectorAll('.section').forEach(s => s.classList.remove('active'));
+    document.querySelectorAll('.nav-btn').forEach(b => b.classList.remove('active'));
+    document.getElementById('tab-' + id).classList.add('active');
+    btn.classList.add('active');
+    if (id === 'entrada') setTimeout(() => { if (window.setEntradaCategoria) setEntradaCategoria(gv('in-tipo') || 'cemento'); if (window.updateEntradaPreview) updateEntradaPreview(); }, 10);
+    if (id === 'produccion') setTimeout(() => { if (window.updateProdPreview) updateProdPreview(); refreshDateInputs(); }, 10);
+    if (id === 'venta') setTimeout(() => { if (window.updateVentaPreview) updateVentaPreview(); }, 10);
+    if (id === 'notas') setTimeout(() => { if (window.updateNotaPreview) updateNotaPreview(); }, 10);
+  }
+
+  function showSubtab(id, btn) {
+    document.getElementById('notas-pendientes').style.display = 'none';
+    document.getElementById('notas-pagadas').style.display = 'none';
+    document.querySelectorAll('.subtab').forEach(b => b.classList.remove('active'));
+    document.getElementById(id).style.display = 'block';
+    btn.classList.add('active');
+  }
+</script>
+</body>
+</html>
