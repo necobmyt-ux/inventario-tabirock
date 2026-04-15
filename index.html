@@ -285,14 +285,13 @@
   window.registrarEntrada = function() {
     const tipo = gv('in-tipo') || entradaCategoria || 'cemento';
     const cant = parseFloat(gv('in-cant')) || 0;
-    const categoriaTexto = productLabel(normalizeProductoKey(gv('in-categoria-producto') || 'tabicon'));
     const precioTon = parseFloat(gv('in-precio-ton')) || 0;
     if (cant <= 0) { toast('Ingresa una cantidad válida.'); return; }
     let insumo = '', cantidad = '';
     let effect = {};
     const proveedor = gv('in-proveedor') || '';
     const nota = gv('in-nota') || '';
-    let extra = [categoriaTexto];
+    let extra = [];
     if (tipo === 'cemento') {
       effect = { cemento: cant };
       inv.cemento += cant;
@@ -322,7 +321,7 @@
     addHist('Entrada', insumo, cantidad, 'Entrada', extra.join(' · '), {
       editable: true,
       effect,
-      raw: { tipo, cant, m3: (tipo === 'cemento' ? null : cant), proveedor, nota, categoriaProducto: normalizeProductoKey(gv('in-categoria-producto') || 'tabicon'), precioTon }
+      raw: { tipo, cant, m3: (tipo === 'cemento' ? null : cant), proveedor, nota, precioTon }
     });
     saveInv();
     sv('in-cant', 1); sv('in-proveedor', ''); sv('in-nota', ''); sv('in-precio-ton', '');
@@ -1386,13 +1385,6 @@
         <div class="form-group">
           <label id="in-cant-label">Cantidad</label>
           <input type="number" id="in-cant" min="0.01" value="1" step="0.01" oninput="updateEntradaPreview()">
-        </div>
-        <div class="form-group">
-          <label>Categoría</label>
-          <select id="in-categoria-producto">
-            <option value="tabicon">Tabicón</option>
-            <option value="tabiqueChiquito">Tabique chiquito</option>
-          </select>
         </div>
         <div class="form-group" id="in-precio-ton-wrap" style="display:none">
           <label>Precio por tonelada ($)</label>
