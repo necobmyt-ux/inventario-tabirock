@@ -519,7 +519,6 @@
   };
 
   window.abonar = function(id) {
-    if (!requireSecurityPin('registrar un abono')) return;
     const nota = normalizeNota(id, notas[id] || {});
     const sal = saldo(nota);
     if (sal <= 0) { toast('Esa nota ya no tiene saldo pendiente.'); return; }
@@ -564,7 +563,6 @@
   };
 
   window.marcarPagada = function(id) {
-    if (!requireSecurityPin('marcar una nota como pagada')) return;
     const nota = normalizeNota(id, notas[id] || {});
     const sal = saldo(nota);
     if (sal <= 0) { toast('Esa nota ya está pagada.'); return; }
@@ -1008,27 +1006,36 @@
     const allItems = getHistEntries().sort((a, b) => histDateValue(b) - histDateValue(a));
     if (!allItems.length) { lista.innerHTML = '<div class="empty">Sin movimientos aún.</div>'; return; }
     const colors = { Entrada: 'badge-in', Producción: 'badge-prod', Defecto: 'badge-defecto', Venta: 'badge-out', Nota: 'badge-nota', Abono: 'badge-abono' };
-    const groups = ['Entrada', 'Producción', 'Defecto', 'Venta', 'Nota', 'Abono'];
     const filter = window.histFilter || 'all';
     const query = (window.histSearch || '').trim().toLowerCase();
-    const useGroups = filter === 'all' ? groups : [filter];
 
-    lista.innerHTML = useGroups.map(group => {
-      const items = allItems.filter(h => h.mov === group && histMatchesSearch(h, query));
-      if (!items.length) return '';
-      return `
-        <div class="hist-group">
-          <div class="hist-group-title">${histLabel(group)} <span>${items.length}</span></div>
-          ${items.map(h => `
-            <div class="hist-row hist-row-acciones">
-              <span class="hist-fecha">${h.fecha || '—'} ${h.hora || ''}</span>
-              <span>${h.insumo || '—'}</span>
-              <span>${h.cantidad || '—'}</span>
-              <span><span class="badge ${colors[h.mov] || 'badge-in'}">${h.mov}</span></span>
-              <span class="hist-actions">${h.editable ? `<button class="hist-btn" onclick="editarMovimiento('${h.id}')">Editar</button><button class="hist-btn hist-btn-danger" onclick="eliminarMovimiento('${h.id}')">Borrar</button>` : '<span class="hist-lock">Fijo</span>'}</span>
-            </div>`).join('')}
-        </div>`;
-    }).join('') || '<div class="empty">Sin movimientos en esta categoría.</div>';
+    const renderRow = (h) => `
+      <div class="hist-row hist-row-acciones">
+        <span class="hist-fecha">${h.fecha || '—'} ${h.hora || ''}</span>
+        <span>${h.insumo || '—'}</span>
+        <span>${h.cantidad || '—'}</span>
+        <span><span class="badge ${colors[h.mov] || 'badge-in'}">${h.mov}</span></span>
+        <span class="hist-actions">${h.editable ? `<button class="hist-btn" onclick="editarMovimiento('${h.id}')">Editar</button><button class="hist-btn hist-btn-danger" onclick="eliminarMovimiento('${h.id}')">Borrar</button>` : '<span class="hist-lock">Fijo</span>'}</span>
+      </div>`;
+
+    if (filter === 'all') {
+      const items = allItems.filter(h => histMatchesSearch(h, query));
+      lista.innerHTML = items.length
+        ? `<div class="hist-group">
+            <div class="hist-group-title">Historial reciente <span>${items.length}</span></div>
+            ${items.map(renderRow).join('')}
+          </div>`
+        : '<div class="empty">Sin movimientos que coincidan con la búsqueda.</div>';
+      return;
+    }
+
+    const items = allItems.filter(h => h.mov === filter && histMatchesSearch(h, query));
+    lista.innerHTML = items.length
+      ? `<div class="hist-group">
+          <div class="hist-group-title">${histLabel(filter)} <span>${items.length}</span></div>
+          ${items.map(renderRow).join('')}
+        </div>`
+      : '<div class="empty">Sin movimientos en esta categoría.</div>';
   }
 
   // ── UTILS ────────────────────────────────────────────────────
@@ -1586,7 +1593,7 @@
 
     <div class="toolbar-search">
       <input type="text" id="notas-search" placeholder="Buscar por cliente, obra, producto, fecha o monto" oninput="setNotasSearch(this.value)">
-      <div class="security-hint">Edición, borrado, abonos y marcar pagada requieren PIN.</div>
+      <div class="security-hint">Solo edición y borrado requieren PIN.</div>
     </div>
 
     <div class="subtab-row">
