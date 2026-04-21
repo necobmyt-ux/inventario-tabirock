@@ -776,18 +776,26 @@
       const tipo = prompt('Tipo: cemento, balastre o confetillo', raw.tipo || 'cemento');
       if (tipo === null) return;
       raw.tipo = String(tipo).trim().toLowerCase();
-      const cant = prompt(raw.tipo === 'cemento' ? 'Cantidad de bultos:' : 'Cantidad real en m³:', raw.tipo === 'cemento' ? (raw.cant ?? '') : (raw.m3 ?? raw.cant ?? ''));
-      if (cant === null) return;
-      raw.cant = Number(cant);
-      if (raw.tipo !== 'cemento') raw.m3 = Number(cant);
-      const categoriaProducto = prompt('Categoría asociada: tabicon o tabiqueChiquito', raw.categoriaProducto || 'tabicon');
-      if (categoriaProducto === null) return;
-      raw.categoriaProducto = String(categoriaProducto).trim();
+
       if (raw.tipo === 'cemento') {
+        const cant = prompt('Cantidad de bultos:', raw.cant ?? '');
+        if (cant === null) return;
+        raw.cant = Number(cant);
+        raw.m3 = null;
         const precioTon = prompt('Precio por tonelada (opcional):', raw.precioTon ?? '');
         if (precioTon === null) return;
         raw.precioTon = Number(precioTon) || 0;
+      } else if (raw.tipo === 'balastre' || raw.tipo === 'confetillo') {
+        const m3Actual = Number(raw.m3 ?? raw.cant) || 0;
+        const m3 = prompt('Cantidad real en m³:', m3Actual);
+        if (m3 === null) return;
+        raw.m3 = Number(m3);
+        raw.cant = Number(m3);
+      } else {
+        toast('Tipo de entrada inválido.');
+        return;
       }
+
       const proveedor = prompt('Proveedor (opcional):', raw.proveedor || '');
       if (proveedor === null) return;
       raw.proveedor = proveedor;
