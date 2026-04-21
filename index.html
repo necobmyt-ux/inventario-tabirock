@@ -186,9 +186,11 @@
     const inFecha = document.getElementById('in-fecha');
     const prodFecha = document.getElementById('prod-fecha');
     const defFecha = document.getElementById('def-fecha');
+    const ventaFecha = document.getElementById('venta-fecha');
     if (inFecha && !inFecha.value) inFecha.value = today;
     if (prodFecha && !prodFecha.value) prodFecha.value = today;
     if (defFecha && !defFecha.value) defFecha.value = today;
+    if (ventaFecha && !ventaFecha.value) ventaFecha.value = today;
   }
 
 
@@ -464,9 +466,9 @@
       '<b>' + fmt(cant) + '</b> piezas de ' + productLabel(producto).toLowerCase() + ' × $<b>' + fmt(precio, 2) + '</b> = <b>$' + fmt(cant * precio, 2) + '</b>';
   };
 
-  function crearNotaDesdeVenta({ cliente = '', obra = '', producto = 'tabicon', cant = 0, precio = 0, nota = '' } = {}) {
+  function crearNotaDesdeVenta({ cliente = '', obra = '', producto = 'tabicon', cant = 0, precio = 0, nota = '', fecha = '' } = {}) {
     const total = (Number(cant) || 0) * (Number(precio) || 0);
-    const fechaHoy = new Date().toLocaleDateString('es-MX', { day: '2-digit', month: '2-digit', year: '2-digit' });
+    const fechaNota = fecha ? fromInputDate(fecha) : new Date().toLocaleDateString('es-MX', { day: '2-digit', month: '2-digit', year: '2-digit' });
     push(ref(db, 'notas'), {
       cliente: cliente || 'Cliente',
       obra: obra || 'General',
@@ -474,7 +476,7 @@
       cant: Number(cant) || 0,
       precio: Number(precio) || 0,
       total,
-      fecha: fechaHoy,
+      fecha: fechaNota,
       fechaLimite: '',
       abonos: [],
       estado: total > 0 ? 'pendiente' : 'pagada',
@@ -486,19 +488,22 @@
   window.registrarVenta = function() {
     const producto = gv('venta-producto') || 'tabicon';
     const cant = parseFloat(gv('venta-cant')) || 0, precio = parseFloat(gv('venta-precio')) || 0;
+    const fecha = gv('venta-fecha') || '';
     if (cant <= 0) { toast('Ingresa una cantidad válida.'); return; }
     if (inv[producto] < cant) { toast('Solo hay ' + fmt(inv[producto]) + ' piezas disponibles de ' + productLabel(producto).toLowerCase() + '.'); return; }
     const effect = { [producto]: -cant };
     const nextInv = applyEffect(inv, effect);
     const total = cant * precio;
     addHist('Venta', (gv('venta-cliente') || 'Cliente') + ' · ' + productLabel(producto), fmt(cant) + ' piezas | $' + fmt(total, 2), 'Venta', gv('venta-nota'), {
+      fecha,
       editable: true,
       effect,
-      raw: { producto, cant, precio, cliente: gv('venta-cliente') || '', obra: gv('venta-obra') || 'General', nota: gv('venta-nota') || '' }
+      raw: { producto, cant, precio, cliente: gv('venta-cliente') || '', obra: gv('venta-obra') || 'General', nota: gv('venta-nota') || '', fecha }
     });
-    crearNotaDesdeVenta({ producto, cant, precio, cliente: gv('venta-cliente') || '', obra: gv('venta-obra') || 'General', nota: gv('venta-nota') || '' });
+    crearNotaDesdeVenta({ producto, cant, precio, cliente: gv('venta-cliente') || '', obra: gv('venta-obra') || 'General', nota: gv('venta-nota') || '', fecha });
     saveInvState(nextInv);
-    sv('venta-cant', 100); sv('venta-precio', 0); sv('venta-cliente', ''); sv('venta-obra', ''); sv('venta-nota', '');
+    sv('venta-cant', 100); sv('venta-precio', 0); sv('venta-cliente', ''); sv('venta-obra', ''); sv('venta-nota', ''); sv('venta-fecha', '');
+    refreshDateInputs();
     updateVentaPreview();
     toast('✓ Venta registrada y nota por cobrar generada.');
   };
@@ -1555,6 +1560,10 @@
           <label>Obra</label>
           <input type="text" id="venta-obra" placeholder="Ej. Casa López / General">
         </div>
+        <div class="form-group">
+          <label>Fecha de venta</label>
+          <input type="date" id="venta-fecha">
+        </div>
         <div class="form-group full">
           <label>Nota</label>
           <input type="text" id="venta-nota" placeholder="Opcional">
@@ -1653,7 +1662,7 @@
     btn.classList.add('active');
     if (id === 'entrada') setTimeout(() => { if (window.setEntradaCategoria) setEntradaCategoria(gv('in-tipo') || 'cemento'); if (window.updateEntradaPreview) updateEntradaPreview(); }, 10);
     if (id === 'produccion') setTimeout(() => { if (window.updateProdPreview) updateProdPreview(); refreshDateInputs(); }, 10);
-    if (id === 'venta') setTimeout(() => { if (window.updateVentaPreview) updateVentaPreview(); }, 10);
+    if (id === 'venta') setTimeout(() => { if (window.updateVentaPreview) updateVentaPreview(); refreshDateInputs(); }, 10);
     if (id === 'notas') setTimeout(() => { if (window.updateNotaPreview) updateNotaPreview(); }, 10);
   }
 
