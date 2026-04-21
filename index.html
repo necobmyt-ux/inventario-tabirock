@@ -863,7 +863,7 @@
     toast('✓ Movimiento editado y stock recalculado.');
   };
 
-  window.eliminarMovimiento = function(id) {
+  window.eliminarMovimiento = async function(id) {
     if (!requireSecurityPin('borrar este movimiento')) return;
     const item = historial[id];
     if (!item) return;
@@ -872,9 +872,19 @@
     const candidateEntries = getHistEntries().filter(entry => entry.id !== id);
     const rebuilt = rebuildInventoryFromHist(candidateEntries);
     if (!rebuilt) { toast('No se pudo borrar porque dejaría inventario negativo.'); return; }
-    remove(ref(db, 'historial/' + id));
-    saveInvState(rebuilt);
-    toast('✓ Movimiento eliminado y stock recalculado.');
+    try {
+      await remove(ref(db, 'historial/' + id));
+      historial = Object.fromEntries(candidateEntries.map(entry => {
+        const { id: entryId, ...rest } = entry;
+        return [entryId, rest];
+      }));
+      renderHistorial();
+      saveInvState(rebuilt);
+      toast('✓ Movimiento eliminado y stock recalculado.');
+    } catch (err) {
+      console.error(err);
+      toast('No se pudo borrar el movimiento.');
+    }
   };
 
   window.setNotasSearch = function(value = '') {
