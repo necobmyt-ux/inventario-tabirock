@@ -230,7 +230,7 @@
     // Alertas
     const hoy = new Date(); hoy.setHours(0,0,0,0);
     let alertas = '';
-    if (inv.cemento < 10 && inv.cemento > 0) alertas += alerta('Cemento bajo: quedan ' + fmt(inv.cemento) + ' bultos.');
+    if (inv.cemento < 10) alertas += alerta('Cemento bajo: quedan ' + fmt(inv.cemento) + ' bultos.');
     if (inv.balastre < 5) alertas += alerta('Balastre bajo: ' + fmt(inv.balastre, 2) + ' m³ disponibles.');
     if (inv.confetillo < 5) alertas += alerta('Confetillo bajo: ' + fmt(inv.confetillo, 2) + ' m³ disponibles.');
 
@@ -252,7 +252,7 @@
 
     // Resumen notas
     let porCobrar = 0, totalNotas = 0;
-    Object.values(notas).map((n, idx) => normalizeNota(String(idx), n)).forEach(n => {
+    Object.entries(notas).map(([id, n]) => normalizeNota(id, n)).forEach(n => {
       if (n.estado !== 'pagada') { porCobrar++; totalNotas += saldo(n); }
     });
     setVal('val-notas-pendientes', porCobrar);
@@ -479,7 +479,7 @@
       fecha: fechaNota,
       fechaLimite: '',
       abonos: [],
-      estado: total > 0 ? 'pendiente' : 'pagada',
+      estado: 'pendiente',
       origen: 'venta',
       nota: nota || ''
     });
@@ -1180,6 +1180,30 @@
     }
   };
 
+  // ── RECUPERACIÓN DE EMERGENCIA ───────────────────────────────
+  // Recalcula el inventario ignorando registros con effect inconsistente
+  window.recuperarInventario = function() {
+    if (!requireSecurityPin('recuperar el inventario')) return;
+    const entries = getHistEntries();
+    const sorted = sortHistEntries(entries);
+    let next = { tabicon: 0, tabiqueChiquito: 0, cemento: 0, balastre: 0, confetillo: 0 };
+    let omitidos = 0;
+    for (const item of sorted) {
+      const ef = normalizeEffect(item.effect || {});
+      const candidate = applyEffect(next, ef);
+      // Si aplicar este effect deja algo negativo, lo omitimos (registro corrupto)
+      if (candidate.tabicon < 0 || candidate.tabiqueChiquito < 0 || candidate.cemento < 0 || candidate.balastre < 0 || candidate.confetillo < 0) {
+        omitidos++;
+        continue;
+      }
+      next = candidate;
+    }
+    if (confirm(`Inventario recalculado:\n\nTabicones: ${next.tabicon}\nCemento: ${next.cemento} bultos\nBalastre: ${next.balastre.toFixed(2)} m³\nConfetillo: ${next.confetillo.toFixed(2)} m³\n\nSe omitieron ${omitidos} registros inconsistentes.\n\n¿Guardar este inventario en Firebase?`)) {
+      saveInvState(next);
+      toast('✓ Inventario recuperado y guardado. Revisa el historial para corregir registros omitidos.');
+    }
+  };
+
   window.borrarTodoFirebase = function() {
     const password = prompt('Escribe la contraseña para borrar todo:');
     if (password === null) return;
@@ -1308,7 +1332,8 @@
   .btn { padding: 10px 20px; border-radius: var(--radius-sm); font-family: 'Sora', sans-serif; font-size: 13px; font-weight: 600; cursor: pointer; border: none; transition: all 0.15s; }
   .btn-primary { background: var(--accent-dark); color: white; }
   .btn-danger { background: var(--red); color: white; }
-  .btn-primary:active, .btn-danger:active { transform: scale(0.97); }
+  .btn-warning { background: var(--amber); color: white; }
+  .btn-primary:active, .btn-danger:active, .btn-warning:active { transform: scale(0.97); }
   .btn-row { margin-top: 14px; display: flex; gap: 8px; }
   .panel-actions { display:flex; gap:10px; flex-wrap:wrap; margin-top:14px; }
   .panel-actions .btn { flex:1 1 220px; }
@@ -1435,6 +1460,7 @@
     </div>
     <div class="panel-actions">
       <button class="btn btn-primary" onclick="exportarTodoExcel()">Exportar todo a Excel</button>
+      <button class="btn btn-warning" onclick="recuperarInventario()">🔧 Recuperar inventario</button>
       <button class="btn btn-danger" onclick="borrarTodoFirebase()">Borrar todo Firebase</button>
     </div>
   </div>
